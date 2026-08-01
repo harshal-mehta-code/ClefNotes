@@ -217,16 +217,83 @@ export function setLyric(score: Score, target: EditTarget, text: string): EditRe
 
 /** Transpose a whole part, written pitch and all. */
 export function transposePart(score: Score, partIndex: number, semitones: number): EditResult {
-  const doc = parseXml(score.musicXml);
+  const result = transposePartXml(score.musicXml, partIndex, semitones);
+  return {
+    musicXml: result.musicXml,
+    description: `${score.parts[partIndex]?.name ?? 'part'} ${semitones > 0 ? '+' : ''}${semitones} semitones`,
+  };
+}
+
+/** The same, on raw MusicXML. */
+export function transposePartXml(musicXml: string, partIndex: number, semitones: number): EditResult {
+  const doc = parseXml(musicXml);
   for (const note of pitchedNotes(doc, partIndex)) {
     const current = readPitch(note);
     if (current) writePitch(doc, note, current.midi + semitones);
   }
-  return {
-    musicXml: serialise(doc),
-    description: `${score.parts[partIndex]?.name ?? 'part'} ${semitones > 0 ? '+' : ''}${semitones} semitones`,
-  };
+  return { musicXml: serialise(doc), description: `${semitones > 0 ? '+' : ''}${semitones} semitones` };
 }
+
+export type ClefId = 'G2' | 'G2-8' | 'F4' | 'C3';
+
+export const CLEF_CHOICES: Array<{ id: ClefId; label: string; octave: number }> = [
+  { id: 'G2', label: 'Treble', octave: 0 },
+  { id: 'G2-8', label: 'Treble 8vb (tenor)', octave: -12 },
+  { id: 'F4', label: 'Bass', octave: 0 },
+  { id: 'C3', label: 'Alto', octave: 0 },
+];
+
+/**
+ * Set a part's clef.
+ *
+ * The tenor clef — a treble sign with a small 8 beneath it — sounds an octave
+ * lower than it looks, and recognition cannot see that 8. Reading it as an
+ * ordinary treble clef puts a whole voice an octave too high, which is
+ * immediately obvious to the ear and impossible to explain. Choosing the clef
+ * here fixes both the printed staff and the pitch it sounds at.
+ */
+export function setPartClef(musicXml: string, partIndex: number, clef: ClefId): EditResult {
+  const doc = parseXml(musicXml);
+  const part = Array.from(doc.querySelectorAll('score-partwise > part'))[partIndex];
+  if (!part) throw new Error('That part is no longer in the score.');
+
+  const existing = part.querySelector('attributes > clef');
+  const wasOctaveDown = existing?.querySelector('clef-octave-change')?.textContent === '-1';
+
+  for (const el of Array.from(part.querySelectorAll('attributes > clef'))) {
+    el.textContent = '';
+    const sign = doc.createElement('sign');
+    const line = doc.createElement('line');
+    if (clef === 'F4') {
+      sign.textContent = 'F';
+      line.textContent = '4';
+    } else if (clef === 'C3') {
+      sign.textContent = 'C';
+      line.textContent = '3';
+    } else {
+      sign.textContent = 'G';
+      line.textContent = '2';
+    }
+    el.appendChild(sign);
+    el.appendChild(line);
+    if (clef === 'G2-8') {
+      const oct = doc.createElement('clef-octave-change');
+      oct.textContent = '-1';
+      el.appendChild(oct);
+    }
+  }
+
+  let xml = serialise(doc);
+  // MusicXML pitches are what sounds, so switching to or from an octave clef
+  // has to move the pitches too, or the staff would read right and sound wrong.
+  const nowOctaveDown = clef === 'G2-8';
+  if (nowOctaveDown && !wasOctaveDown) xml = transposePartXml(xml, partIndex, -12).musicXml;
+  else if (!nowOctaveDown && wasOctaveDown) xml = transposePartXml(xml, partIndex, 12).musicXml;
+
+  const label = CLEF_CHOICES.find((c) => c.id === clef)?.label ?? clef;
+  return { musicXml: xml, description: `clef set to ${label}` };
+}
+
 
 export const KEY_CHOICES: Array<{ fifths: number; label: string }> = [
   { fifths: -7, label: 'C♭ major / A♭ minor' },

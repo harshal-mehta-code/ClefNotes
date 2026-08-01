@@ -65,14 +65,32 @@ gap between them, not by measuring the gap. On real choral music the space
 within a system and the space between systems are near enough identical, and
 the gap heuristic collapsed a two-part score into four.
 
+**Voices sharing a staff are separated**, which is what makes close-harmony
+music work at all: barbershop SATB is four voices on two staves, and a hymn is
+the same idea. Two engraving conventions give it away. Where the voices share a
+rhythm they share a stem, so two noteheads sit at the same horizontal position —
+read left to right they would double the note count and wreck the rhythm. Where
+the rhythms differ each voice gets its own stem, the upper always up and the
+lower always down, *contrary* to single-voice engraving where the stem follows
+the pitch. A stemless semibreve — the sustained bass under a moving line — is
+placed by pitch.
+
+Rhythm is fitted **per measure**. Durations read from stems and beams are the
+least reliable thing in the pipeline, and left alone their errors accumulate:
+one misread quaver on page one shifts every bar after it. Barlines are far
+easier to see than beams, so each measure is normalised to the length the time
+signature demands and an error stays inside its own bar.
+
 **It is genuinely beta, and the ceiling is low on dense music.** On a clean
 printed score it finds the right number of staves, the right number of parts,
 and most of the noteheads. It does not read:
 
 - **key signatures** — so the Studio asks you, in one tap, rather than guessing;
   a wrong key silently mis-pitches every note of that letter
+- **octave clefs** — the small 8 under a tenor clef is invisible to it, so the
+  Studio offers a clef per part; choosing one moves the printed staff and the
+  sounding pitch together
 - **ties and slurs** — a tied note arrives as two notes
-- **two voices sharing a staff** — they merge, and the rhythm goes with them
 - **dynamics, articulation, repeats**
 
 On a barbershop or piano-vocal chart, expect a sketch to correct rather than a

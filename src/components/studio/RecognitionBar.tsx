@@ -1,5 +1,12 @@
 import { useApp } from '../../state/store';
-import { KEY_CHOICES, setKeySignature, setTimeSignature } from '../../lib/score/edit';
+import {
+  CLEF_CHOICES,
+  KEY_CHOICES,
+  setKeySignature,
+  setPartClef,
+  setTimeSignature,
+  type ClefId,
+} from '../../lib/score/edit';
 
 /**
  * The two things recognition can't read.
@@ -67,9 +74,50 @@ export default function RecognitionBar() {
         </select>
       </div>
 
-      <span className="lbl ml-auto hidden sm:block">
+      {score.parts.map((part, i) => (
+        <div key={i} className="flex items-center gap-1.5">
+          <span className="lbl max-w-[110px] truncate" title={part.name}>
+            {part.name}
+          </span>
+          <select
+            className="field"
+            value={clefOf(score.musicXml, i)}
+            disabled={loading}
+            onChange={(e) =>
+              void applyScoreEdit((xml) => setPartClef(xml, i, e.target.value as ClefId))
+            }
+            aria-label={`Clef for ${part.name}`}
+            title="A tenor clef sounds an octave lower than it looks, and recognition can't see the little 8"
+          >
+            {CLEF_CHOICES.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      ))}
+
+      <span className="lbl ml-auto hidden lg:block">
         Recognition can't read these — set them once and the notes follow
       </span>
     </div>
   );
+}
+
+/** The clef currently written on a part, read back from the MusicXML. */
+function clefOf(musicXml: string, partIndex: number): ClefId {
+  try {
+    const doc = new DOMParser().parseFromString(musicXml, 'application/xml');
+    const part = Array.from(doc.querySelectorAll('score-partwise > part'))[partIndex];
+    const clef = part?.querySelector('attributes > clef');
+    if (!clef) return 'G2';
+    const sign = clef.querySelector('sign')?.textContent?.trim();
+    const down = clef.querySelector('clef-octave-change')?.textContent?.trim() === '-1';
+    if (sign === 'F') return 'F4';
+    if (sign === 'C') return 'C3';
+    return down ? 'G2-8' : 'G2';
+  } catch {
+    return 'G2';
+  }
 }

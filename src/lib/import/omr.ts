@@ -15,7 +15,13 @@ import { buildMusicXml, type PartSpec, type ScoreSpec } from '../score/builder';
  *   3. Staff-line removal            → symbols on their own
  *   4. Elliptical template matching  → noteheads, filled vs hollow
  *   5. Vertical run analysis         → stems, flags, beams → durations
- *   6. Long vertical runs            → barlines → measures
+ *   6. Barline-to-barline connection → staves grouped into systems
+ *   7. Stacked heads + stem direction → the voices sharing a staff
+ *   8. Per-measure normalisation     → rhythm that cannot drift past a barline
+ *
+ * Steps 7 and 8 matter more than they sound. A close-harmony score puts two
+ * singers on one staff — barbershop SATB is four voices on two staves — and
+ * reading that as two lines is not a small inaccuracy, it is the wrong music.
  *
  * Accuracy is what it is. That's why nothing here is presented as finished:
  * the import screen shows the page beside the result and lets you fix notes.
@@ -63,6 +69,11 @@ export interface Head {
   step: number;
   /** Quarter-note length, once stems and beams have been read. */
   qDur: number;
+  /**
+   * Which way the stem points, or undefined for a stemless semibreve.
+   * This is how the voices of a closed score are told apart.
+   */
+  stemUp?: boolean;
 }
 
 // --- 1. threshold ----------------------------------------------------------
@@ -405,6 +416,7 @@ export function readDurations(clean: Bitmap, heads: Head[], staves: Staff[]): He
     }
     const stemLen = Math.max(stemUp, stemDown);
     const hasStem = stemLen > sp * 1.6;
+    head.stemUp = hasStem ? stemUp >= stemDown : undefined;
 
     if (!head.filled) {
       head.qDur = hasStem ? 2 : 4;
@@ -505,30 +517,193 @@ export function groupSystems(clean: Bitmap, staves: Staff[]): number[][] {
   return groups;
 }
 
-// --- 6. barlines -----------------------------------------------------------
+// --- 5d. voices within a staff ---------------------------------------------
 
-export function findBarlines(clean: Bitmap, staff: Staff): number[] {
-  const sp = staff.spacing;
-  const need = Math.round(sp * 3.4);
-  const xs: number[] = [];
-  const yTop = Math.round(staff.top);
+/**
+ * Split one staff into its independent voices.
+ *
+ * A close-harmony score puts two singers on one staff, and reading it as a
+ * single line is not a small inaccuracy — it is the wrong music. Barbershop
+ * SATB is four voices on two staves; a hymn is the same idea. Getting this
+ * wrong turns "hear my line on its own" into "hear a line nobody sings".
+ *
+ * Two engraving conventions give it away, and both are needed:
+ *
+ *   Stacked noteheads. When the voices share a rhythm they share a stem, so
+ *   two noteheads sit at the same horizontal position. Read sequentially they
+ *   double the note count and wreck the rhythm — which is exactly what the
+ *   first version did.
+ *
+ *   Stem direction. When the rhythms differ each voice gets its own stem: the
+ *   upper voice always points up, the lower always down. That is *contrary* to
+ *   single-voice engraving, where the stem follows the pitch and flips at the
+ *   middle line — so stems that disagree with the pitch are the tell.
+ */
+export function splitVoices(heads: Head[], sp: number): Head[][] {
+  const sorted = [...heads].sort((a, b) => a.x - b.x);
+  if (sorted.length < 4) return [sorted];
 
-  for (let x = staff.left; x <= staff.right; x++) {
-    let run = 0;
-    let best = 0;
-    for (let y = yTop; y <= Math.round(staff.bottom); y++) {
-      if (clean.data[y * clean.w + x]) {
-        run++;
-        best = Math.max(best, run);
-      } else run = 0;
-    }
-    if (best >= need) xs.push(x);
+  // Noteheads close enough together horizontally sound at the same moment.
+  const columns: Head[][] = [];
+  for (const h of sorted) {
+    const last = columns[columns.length - 1];
+    if (last && h.x - last[last.length - 1].x <= sp * 0.8) last.push(h);
+    else columns.push([h]);
   }
 
-  // Collapse adjacent columns into one barline.
+  const stacked = columns.filter((c) => c.length >= 2).length / columns.length;
+  const stemmed = sorted.filter((h) => h.stemUp != null);
+  // On a single-voice staff a stem points up below the middle line and down
+  // above it. Disagreement means the stem is carrying voice information.
+  const contrary = stemmed.filter((h) => h.stemUp !== h.step < 4).length / Math.max(1, stemmed.length);
+
+  if (stacked < 0.22 && contrary < 0.3) return [sorted];
+
+  const upper: Head[] = [];
+  const lower: Head[] = [];
+  const recent = (v: Head[]) =>
+    v.length ? v.slice(-4).reduce((s, h) => s + h.step, 0) / Math.min(4, v.length) : null;
+
+  for (const column of columns) {
+    if (column.length >= 2) {
+      const byPitch = [...column].sort((a, b) => b.step - a.step);
+      upper.push(byPitch[0]);
+      lower.push(byPitch[byPitch.length - 1]);
+      // Inner notes of a thicker chord join whichever voice they sit nearer.
+      for (const middle of byPitch.slice(1, -1)) {
+        const toTop = byPitch[0].step - middle.step;
+        const toBottom = middle.step - byPitch[byPitch.length - 1].step;
+        (toTop <= toBottom ? upper : lower).push(middle);
+      }
+      continue;
+    }
+
+    const h = column[0];
+    if (h.stemUp === true) upper.push(h);
+    else if (h.stemUp === false) lower.push(h);
+    else {
+      // A stemless semibreve carries no direction, so place it by pitch —
+      // this is the sustained bass note under a moving upper voice.
+      const u = recent(upper);
+      const l = recent(lower);
+      if (u == null && l == null) lower.push(h);
+      else if (u == null) lower.push(h);
+      else if (l == null) upper.push(h);
+      else (Math.abs(h.step - u) < Math.abs(h.step - l) ? upper : lower).push(h);
+    }
+  }
+
+  return [upper, lower].filter((v) => v.length > 0);
+}
+
+/** Legal note lengths in sixteenths, longest first. */
+const UNIT_TOKENS: Array<[number, string]> = [
+  [16, 'w'], [12, 'h.'], [8, 'h'], [6, 'q.'], [4, 'q'], [3, 'e.'], [2, 'e'], [1, 's'],
+];
+
+/** Express a length in sixteenths as tied tokens that sum to it exactly. */
+function tokensForUnits(pitch: string, units: number): string[] {
+  const out: string[] = [];
+  let left = Math.max(1, Math.round(units));
+  let guard = 0;
+  while (left > 0 && guard++ < 32) {
+    const pick = UNIT_TOKENS.find(([u]) => u <= left) ?? UNIT_TOKENS[UNIT_TOKENS.length - 1];
+    left -= pick[0];
+    const more = left > 0 && pitch !== 'r';
+    out.push(`${pitch}:${pick[1]}${more ? '~' : ''}`);
+  }
+  return out;
+}
+
+/**
+ * Fit one voice's notes into the measures marked by the barlines.
+ *
+ * Durations read from stems and beams are the least reliable thing here, and
+ * left alone their errors accumulate across the whole piece — one misread quaver
+ * on page one shifts every bar after it. Barlines are far easier to see than
+ * beams, so each measure is normalised to the length the time signature says it
+ * must be. An error then stays inside its own bar instead of derailing the rest
+ * of the score.
+ */
+function emitVoice(
+  voice: Head[],
+  barEdges: number[],
+  qPerBar: number,
+  clef: 'G2' | 'F4',
+): string[] {
+  const unitsPerBar = Math.max(1, Math.round(qPerBar * 4));
+  const tokens: string[] = [];
+
+  for (let m = 0; m + 1 < barEdges.length; m++) {
+    const from = barEdges[m];
+    const to = barEdges[m + 1];
+    const inBar = voice.filter((h) => h.x > from && h.x <= to);
+
+    if (!inBar.length) {
+      tokens.push(...tokensForUnits('r', unitsPerBar));
+      continue;
+    }
+
+    // Share the bar out in proportion to the durations we read, using largest
+    // remainder so the parts still add up to a whole bar exactly.
+    const weights = inBar.map((h) => Math.max(0.25, h.qDur));
+    const total = weights.reduce((a, b) => a + b, 0);
+    const exact = weights.map((w) => (w / total) * unitsPerBar);
+    const floors = exact.map((v) => Math.max(1, Math.floor(v)));
+    let short = unitsPerBar - floors.reduce((a, b) => a + b, 0);
+
+    if (short < 0) {
+      // More notes than the bar can hold at a sixteenth each: keep the ones
+      // that fit rather than inventing a longer bar.
+      inBar.length = unitsPerBar;
+      floors.length = unitsPerBar;
+      floors.fill(1);
+      short = 0;
+    }
+    const order = exact
+      .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+      .sort((a, b) => b.frac - a.frac);
+    for (let k = 0; k < short; k++) floors[order[k % order.length].i] += 1;
+
+    inBar.forEach((h, i) => {
+      tokens.push(...tokensForUnits(spell(h.step, clef), floors[i]));
+    });
+  }
+
+  return tokens;
+}
+
+// --- 6. barlines -----------------------------------------------------------
+
+/**
+ * Find barlines.
+ *
+ * A stem is nearly as tall as a staff, so "a long vertical run" alone finds
+ * stems too. A barline is distinguished by reaching the top line *and* the
+ * bottom line — a stem only ever touches one of them.
+ */
+export function findBarlines(clean: Bitmap, staff: Staff): number[] {
+  const sp = staff.spacing;
+  const yTop = Math.round(staff.top);
+  const yBottom = Math.round(staff.bottom);
+  const height = yBottom - yTop;
+  if (height <= 0) return [];
+
+  const xs: number[] = [];
+  for (let x = staff.left; x <= staff.right; x++) {
+    // Must be present at both ends of the staff.
+    if (!ink(clean, x, yTop + 1) || !ink(clean, x, yBottom - 1)) continue;
+    let filled = 0;
+    for (let y = yTop; y <= yBottom; y++) {
+      if (clean.data[y * clean.w + x]) filled++;
+    }
+    if (filled >= height * 0.92) xs.push(x);
+  }
+
+  // Collapse adjacent columns — and the two lines of a double bar — into one.
   const merged: number[] = [];
   for (const x of xs) {
-    if (!merged.length || x - merged[merged.length - 1] > sp) merged.push(x);
+    if (!merged.length || x - merged[merged.length - 1] > sp * 1.2) merged.push(x);
     else merged[merged.length - 1] = x;
   }
   return merged;
@@ -551,16 +726,6 @@ function spell(step: number, clef: 'G2' | 'F4'): string {
 
 // --- assembly --------------------------------------------------------------
 
-const DUR_CODE: Array<[number, string]> = [
-  [4, 'w'], [3, 'h.'], [2, 'h'], [1.5, 'q.'], [1, 'q'], [0.75, 'e.'], [0.5, 'e'], [0.25, 's'],
-];
-
-function durToken(q: number): string {
-  let best = DUR_CODE[DUR_CODE.length - 1];
-  for (const e of DUR_CODE) if (Math.abs(e[0] - q) < Math.abs(best[0] - q)) best = e;
-  return best[1];
-}
-
 export interface OmrResult {
   musicXml: string;
   pages: OmrPageResult[];
@@ -577,6 +742,13 @@ export interface OmrResult {
  * Staves are matched into parts by their position within each system, which is
  * the same assumption a human makes reading down a page.
  */
+/** Flatten (staff position, voice) into a single part index, top to bottom. */
+function partIndexFor(staffPosition: number, voice: number, voicesPerStaff: number[]): number {
+  let index = 0;
+  for (let s = 0; s < staffPosition; s++) index += voicesPerStaff[s] ?? 1;
+  return index + voice;
+}
+
 export async function recognise(
   pageCount: number,
   getPage: (index: number) => Promise<ImageData>,
@@ -587,6 +759,9 @@ export async function recognise(
   let stavesPerSystem = 0;
   let totalNotes = 0;
   let totalConfidence = 0;
+  /** How many voices each staff position carries, fixed by the first system. */
+  const voicesPerStaff: number[] = [];
+  const partClefs: Array<'G2' | 'F4'> = [];
 
   for (let p = 0; p < pageCount; p++) {
     opts.onProgress?.(`Reading page ${p + 1} of ${pageCount}…`, p / pageCount);
@@ -609,14 +784,10 @@ export async function recognise(
     const heads = readDurations(clean, findHeads(clean, staves), staves);
     const systems = groupSystems(clean, staves);
 
-    // The first page with music establishes how many staves a system has, and
-    // therefore how many parts the score is in.
+    // The first page with music establishes how many staves a system has.
     if (!stavesPerSystem) {
-      const sizes = systems.map((s) => s.length).filter((n) => n > 0);
-      // Use the most common system size — a first system indented for part
-      // names, or a short final system, should not set the shape of the score.
       const tally = new Map<number, number>();
-      for (const n of sizes) tally.set(n, (tally.get(n) ?? 0) + 1);
+      for (const s of systems) if (s.length) tally.set(s.length, (tally.get(s.length) ?? 0) + 1);
       let best = 1;
       let bestCount = 0;
       for (const [n, c] of tally) {
@@ -628,20 +799,40 @@ export async function recognise(
       stavesPerSystem = Math.max(1, Math.min(best, 8));
     }
 
-    // Position within its own system is what makes a staff part 1, 2, 3…
+    const [beats, beatType] = opts.time ?? [4, 4];
+    const qPerBar = (beats * 4) / beatType;
+
     for (const system of systems) {
       system.forEach((staffIndex, positionInSystem) => {
-        const partIndex = positionInSystem % stavesPerSystem;
-        if (!perStaffTokens[partIndex]) perStaffTokens[partIndex] = [];
-        const clef =
-          opts.clefs?.[partIndex] ??
-          (partIndex === stavesPerSystem - 1 && stavesPerSystem > 1 ? 'F4' : 'G2');
-
-        const mine = heads.filter((hd) => hd.staff === staffIndex).sort((a, b) => a.x - b.x);
-        for (const head of mine) {
-          perStaffTokens[partIndex].push(`${spell(head.step, clef)}:${durToken(head.qDur)}`);
-        }
+        if (positionInSystem >= stavesPerSystem) return;
+        const staff = staves[staffIndex];
+        const mine = heads.filter((hd) => hd.staff === staffIndex);
         totalNotes += mine.length;
+
+        const clef =
+          opts.clefs?.[positionInSystem] ??
+          (positionInSystem === stavesPerSystem - 1 && stavesPerSystem > 1 ? 'F4' : 'G2');
+
+        // Voices are discovered per staff, but the *number* of them has to be
+        // fixed for the whole score or the parts would shuffle between systems.
+        const voices = splitVoices(mine, staff.spacing);
+        if (voicesPerStaff[positionInSystem] == null) {
+          voicesPerStaff[positionInSystem] = voices.length;
+        }
+        const wanted = voicesPerStaff[positionInSystem];
+
+        const bars = findBarlines(clean, staff);
+        const edges = [staff.left - 1, ...bars.filter((x) => x > staff.left + staff.spacing), staff.right + 1];
+
+        for (let v = 0; v < wanted; v++) {
+          const partIndex = partIndexFor(positionInSystem, v, voicesPerStaff);
+          if (!perStaffTokens[partIndex]) perStaffTokens[partIndex] = [];
+          // A staff that has fewer voices in this system than elsewhere still
+          // needs its bars accounted for, or the parts drift apart.
+          const voice = voices[v] ?? [];
+          perStaffTokens[partIndex].push(...emitVoice(voice, edges, qPerBar, clef));
+          partClefs[partIndex] = clef;
+        }
       });
     }
 
@@ -655,11 +846,24 @@ export async function recognise(
 
   opts.onProgress?.('Assembling the score…', 0.95);
 
+  // Name the parts by where they sit: staff, then voice within it. Real names
+  // are printed on the page, but reading them is text recognition, which this
+  // is not — and an honest "Staff 1 · upper" beats a confidently wrong "Tenor".
+  const names: string[] = [];
+  for (let s = 0; s < Math.max(1, stavesPerSystem); s++) {
+    const voices = voicesPerStaff[s] ?? 1;
+    for (let v = 0; v < voices; v++) {
+      if (voices === 1) names.push(stavesPerSystem === 1 ? 'Recognised part' : `Staff ${s + 1}`);
+      else names.push(`Staff ${s + 1} · ${v === 0 ? 'upper' : 'lower'} voice`);
+    }
+  }
+
   const parts: PartSpec[] = perStaffTokens
     .map((tokens, i) => ({
-      name: perStaffTokens.length === 1 ? 'Recognised part' : `Staff ${i + 1}`,
-      clef: (opts.clefs?.[i] ?? (i === perStaffTokens.length - 1 && perStaffTokens.length > 1 ? 'F4' : 'G2')) as 'G2' | 'F4',
-      notes: tokens.filter((t) => t !== '|').join(' '),
+      name: names[i] ?? `Part ${i + 1}`,
+      abbrev: names[i]?.includes('upper') ? `${Math.floor(i / 2) + 1}↑` : names[i]?.includes('lower') ? `${Math.floor(i / 2) + 1}↓` : undefined,
+      clef: partClefs[i] ?? 'G2',
+      notes: tokens.join(' '),
     }))
     .filter((p) => p.notes.trim().length > 0);
 
