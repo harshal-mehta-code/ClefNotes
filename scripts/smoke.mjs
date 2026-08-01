@@ -155,6 +155,31 @@ check(
   `${clefs.changed} of ${clefs.peers} staves`,
 );
 
+// Key signatures. Every staff should end up with a key, the two staves of a
+// system must agree (they are braced together and cannot differ), and a change
+// can only happen where a new system begins.
+const keys = await page.evaluate(() => {
+  const st = window.__cn.getState().score.staves;
+  const bySystem = new Map();
+  for (const s of st) {
+    const k = `${s.page}:${s.system}`;
+    if (!bySystem.has(k)) bySystem.set(k, []);
+    bySystem.get(k).push(s.sharps);
+  }
+  const systems = [...bySystem.values()];
+  return {
+    unset: st.filter((s) => s.sharps == null).length,
+    disagree: systems.filter((v) => v.some((x) => x !== v[0])).length,
+    distinct: [...new Set(st.map((s) => s.sharps))].sort((a, b) => a - b),
+  };
+});
+check('every staff has a key signature', keys.unset === 0, `${keys.unset} without one`);
+check(
+  'staves of a system share one key',
+  keys.disagree === 0,
+  `${keys.disagree} systems disagree · keys ${keys.distinct.join(', ')}`,
+);
+
 // The piano roll follows the page you are looking at.
 const roll = await page.evaluate(async () => {
   const s = window.__cn.getState();

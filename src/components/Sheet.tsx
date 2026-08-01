@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/store';
 import {
   CLEFS,
+  KEYS,
+  keyShort,
   noteName,
+  staffSharps,
   stepAt,
   stepToMidi,
   stepToName,
@@ -33,6 +36,7 @@ export default function Sheet() {
   const soundNote = useApp((s) => s.soundNote);
   const setStaffClef = useApp((s) => s.setStaffClef);
   const applyClefs = useApp((s) => s.applyClefs);
+  const setStaffSharps = useApp((s) => s.setStaffSharps);
   const nudgeSelected = useApp((s) => s.nudgeSelected);
 
   const setVisiblePage = useApp((s) => s.setVisiblePage);
@@ -314,6 +318,35 @@ export default function Sheet() {
                   {CLEFS.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.short} · {c.label}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            ))}
+
+            {/* Key per staff, under the clef. Music changes key, and this score
+                does: one setting for the whole piece would be wrong for every
+                note after the change. What was read here is shown, so you can
+                see at a glance whether it agrees with the page. */}
+            {staves.map((s) => (
+              <span
+                key={`key-${s.id}`}
+                className="clef-pick absolute"
+                style={{
+                  left: 0,
+                  top: `calc(${((s.top - s.spacing * 0.5) / page.height) * 100}% + 17px)`,
+                }}
+                title="The key signature in force on this staff — change it if it does not match what is printed"
+              >
+                {keyShort(staffSharps(s, score))}
+                <select
+                  value={staffSharps(s, score)}
+                  onChange={(e) => setStaffSharps(s.id, Number(e.target.value))}
+                  aria-label={`Key for staff ${s.positionInSystem + 1} of system ${s.system + 1}`}
+                >
+                  {KEYS.map((k) => (
+                    <option key={k.sharps} value={k.sharps}>
+                      {k.short} · {k.label}
                     </option>
                   ))}
                 </select>

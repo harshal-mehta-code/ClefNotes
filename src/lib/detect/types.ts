@@ -82,7 +82,36 @@ export interface DetectedStaff {
   left: number;
   right: number;
   clef: ClefId;
+  /**
+   * Key signature read at the head of this staff, in sharps (negative for
+   * flats). Null means it could not be read with confidence — the score's key
+   * is used instead. It is per staff because music changes key: one global
+   * setting gets a modulation wrong for every note after it.
+   */
+  sharps: number | null;
 }
+
+/** The keys a score can be in, in the order a musician thinks of them. */
+export const KEYS: Array<{ sharps: number; label: string; short: string }> = [
+  { sharps: 0, label: 'C major / A minor', short: '♮' },
+  { sharps: 1, label: 'G major / E minor', short: '1♯' },
+  { sharps: 2, label: 'D major / B minor', short: '2♯' },
+  { sharps: 3, label: 'A major / F♯ minor', short: '3♯' },
+  { sharps: 4, label: 'E major / C♯ minor', short: '4♯' },
+  { sharps: 5, label: 'B major / G♯ minor', short: '5♯' },
+  { sharps: 6, label: 'F♯ major / D♯ minor', short: '6♯' },
+  { sharps: -1, label: 'F major / D minor', short: '1♭' },
+  { sharps: -2, label: 'B♭ major / G minor', short: '2♭' },
+  { sharps: -3, label: 'E♭ major / C minor', short: '3♭' },
+  { sharps: -4, label: 'A♭ major / F minor', short: '4♭' },
+  { sharps: -5, label: 'D♭ major / B♭ minor', short: '5♭' },
+  { sharps: -6, label: 'G♭ major / E♭ minor', short: '6♭' },
+];
+
+export const keyLabel = (sharps: number): string =>
+  KEYS.find((k) => k.sharps === sharps)?.label ?? `${sharps} sharps`;
+export const keyShort = (sharps: number): string =>
+  KEYS.find((k) => k.sharps === sharps)?.short ?? `${sharps}`;
 
 export interface DetectedNote {
   id: string;
@@ -119,13 +148,18 @@ export interface PageScore {
   nudges: Record<string, number>;
 }
 
+/** The key in force on a staff: what was read there, or the score's default. */
+export function staffSharps(staff: DetectedStaff, score: PageScore): number {
+  return staff.sharps ?? score.sharps;
+}
+
 /** The sounding pitch of a note, including any correction the user has made. */
 export function noteMidi(note: DetectedNote, staff: DetectedStaff, score: PageScore): number {
-  return stepToMidi(note.step + (score.nudges[note.id] ?? 0), staff.clef, score.sharps);
+  return stepToMidi(note.step + (score.nudges[note.id] ?? 0), staff.clef, staffSharps(staff, score));
 }
 
 export function noteName(note: DetectedNote, staff: DetectedStaff, score: PageScore): string {
-  return stepToName(note.step + (score.nudges[note.id] ?? 0), staff.clef, score.sharps);
+  return stepToName(note.step + (score.nudges[note.id] ?? 0), staff.clef, staffSharps(staff, score));
 }
 
 /** The staff step at an arbitrary y — what makes clicking bare staff work. */

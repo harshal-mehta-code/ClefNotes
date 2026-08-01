@@ -1,24 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useApp } from './state/store';
 import { instrumentsByFamily } from './lib/audio/instruments';
+import { KEYS } from './lib/detect/types';
 import Library from './components/Library';
 import Sheet from './components/Sheet';
 import Keys from './components/Keys';
 import Contour from './components/Contour';
-
-const KEYS = [
-  { sharps: 0, label: 'C / A minor' },
-  { sharps: 1, label: 'G / E minor' },
-  { sharps: 2, label: 'D / B minor' },
-  { sharps: 3, label: 'A / F♯ minor' },
-  { sharps: 4, label: 'E / C♯ minor' },
-  { sharps: 5, label: 'B / G♯ minor' },
-  { sharps: -1, label: 'F / D minor' },
-  { sharps: -2, label: 'B♭ / G minor' },
-  { sharps: -3, label: 'E♭ / C minor' },
-  { sharps: -4, label: 'A♭ / F minor' },
-  { sharps: -5, label: 'D♭ / B♭ minor' },
-];
 
 export default function App() {
   const view = useApp((s) => s.view);
@@ -33,8 +20,18 @@ export default function App() {
   const showNotes = useApp((s) => s.showNotes);
   const setShowNotes = useApp((s) => s.setShowNotes);
   const setSharps = useApp((s) => s.setSharps);
+  const visiblePage = useApp((s) => s.visiblePage);
   const importFile = useApp((s) => s.importFile);
   const [showRoll, setShowRoll] = useState(true);
+
+  // The key shown is the one in force where you are reading, since a score can
+  // change key partway through and a single number would be a lie on one of the
+  // two halves.
+  const shownKey = useMemo(() => {
+    if (!score) return 0;
+    const here = score.staves.find((s) => s.page === visiblePage && s.sharps != null);
+    return here?.sharps ?? score.sharps;
+  }, [score, visiblePage]);
 
   // A PDF dropped anywhere on the window imports.
   useEffect(() => {
@@ -59,7 +56,7 @@ export default function App() {
 
   return (
     <div className="grain flex h-full flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b-[1.5px] border-ink bg-paper px-3 py-1.5">
+      <header className="flex shrink-0 items-center gap-1.5 border-b-[1.5px] border-ink bg-paper px-2 py-1.5 sm:gap-2 sm:px-3">
         <button
           className="flex shrink-0 items-center font-display text-[14px] font-extrabold tracking-[-0.02em]"
           onClick={closeScore}
@@ -79,7 +76,7 @@ export default function App() {
             <div className="flex items-center gap-1.5">
               <span className="lbl hidden sm:inline">Sound</span>
               <select
-                className="field max-w-[132px]"
+                className="field max-w-[92px] sm:max-w-[132px]"
                 value={instrument}
                 onChange={(e) => setInstrument(e.target.value as typeof instrument)}
                 aria-label="Instrument"
@@ -96,14 +93,14 @@ export default function App() {
               </select>
             </div>
 
-            <div className="hidden items-center gap-1.5 md:flex">
-              <span className="lbl">Key</span>
+            <div className="flex items-center gap-1.5">
+              <span className="lbl hidden sm:inline">Key</span>
               <select
-                className="field"
-                value={score.sharps}
-                onChange={(e) => setSharps(Number(e.target.value))}
+                className="field max-w-[92px] sm:max-w-none"
+                value={shownKey}
+                onChange={(e) => setSharps(Number(e.target.value), shownKey)}
                 aria-label="Key signature"
-                title="Recognition can't read a key signature — set it and every note follows"
+                title="The key in force on the page you are reading, read from the page. Changing it retunes every staff in that key, leaving a later key change alone; a single staff can be set in the margin beside it."
               >
                 {KEYS.map((k) => (
                   <option key={k.sharps} value={k.sharps}>
@@ -126,10 +123,20 @@ export default function App() {
             >
               Roll
             </button>
-            <button className="chip" onClick={() => setZoom(Math.max(0.6, zoom - 0.15))} title="Smaller">
+            {/* Zoom does nothing on a phone — the page is already as wide as
+                the screen — so it only appears where it has an effect. */}
+            <button
+              className="chip hidden sm:inline-block"
+              onClick={() => setZoom(Math.max(0.6, zoom - 0.15))}
+              title="Smaller"
+            >
               −
             </button>
-            <button className="chip" onClick={() => setZoom(Math.min(2.4, zoom + 0.15))} title="Larger">
+            <button
+              className="chip hidden sm:inline-block"
+              onClick={() => setZoom(Math.min(2.4, zoom + 0.15))}
+              title="Larger"
+            >
               +
             </button>
             <button className="chip" onClick={closeScore}>

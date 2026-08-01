@@ -91,6 +91,8 @@ export async function importPdf(
 
   const title = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Untitled score';
 
+  inheritKeys(staves);
+
   return {
     id: `score-${Date.now().toString(36)}`,
     title,
@@ -99,7 +101,73 @@ export async function importPdf(
     pages,
     staves,
     notes,
-    sharps: 0,
+    sharps: commonKey(staves),
     nudges: {},
   };
+}
+
+/**
+ * Give staves whose key signature could not be read the key that is in force
+ * there.
+ *
+ * This is not a patch over the detector — it is how the notation works. A key
+ * signature holds until it is changed, and engravers reprint it on every system
+ * as a courtesy. So a staff that could not be read shares its system's key, and
+ * failing that, carries on with the key of the system before it. Only a stretch
+ * at the very start with nothing readable anywhere is left unknown.
+ */
+function inheritKeys(staves: DetectedStaff[]): void {
+  // Staves of one system are braced together and always share a key.
+  const systems = new Map<string, DetectedStaff[]>();
+  for (const s of staves) {
+    const id = `${s.page}:${s.system}`;
+    if (!systems.has(id)) systems.set(id, []);
+    systems.get(id)!.push(s);
+  }
+  for (const group of systems.values()) {
+    const read = group.find((s) => s.sharps != null);
+    if (read) for (const s of group) s.sharps = read.sharps;
+  }
+
+  // Then forwards through the score, and backwards for anything before the
+  // first staff that could be read.
+  let carried: number | null = null;
+  for (const s of staves) {
+    if (s.sharps == null) s.sharps = carried;
+    else carried = s.sharps;
+  }
+  carried = null;
+  for (let i = staves.length - 1; i >= 0; i--) {
+    if (staves[i].sharps == null) staves[i].sharps = carried;
+    else carried = staves[i].sharps;
+  }
+
+  // Nothing readable anywhere. A score with no key signature printed on it is
+  // in C, and a score whose signatures could not be read has to start
+  // somewhere — either way this is the answer to correct from, and leaving the
+  // field empty would only push the same assumption further downstream.
+  for (const s of staves) if (s.sharps == null) s.sharps = 0;
+}
+
+/**
+ * The score's key: whichever one most staves were read as. It is the fallback
+ * for staves whose key could not be read, so the commonest reading is the
+ * safest guess — and on a score that changes key, the staves that did read
+ * carry their own.
+ */
+function commonKey(staves: DetectedStaff[]): number {
+  const tally = new Map<number, number>();
+  for (const s of staves) {
+    if (s.sharps == null) continue;
+    tally.set(s.sharps, (tally.get(s.sharps) ?? 0) + 1);
+  }
+  let best = 0;
+  let bestCount = 0;
+  for (const [sharps, n] of tally) {
+    if (n > bestCount) {
+      best = sharps;
+      bestCount = n;
+    }
+  }
+  return best;
 }

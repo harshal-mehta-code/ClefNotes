@@ -71,8 +71,11 @@ touched, and the correction is saved with the score.
 the wrong clef puts a whole staff in the wrong octave. There is a picker on
 every staff, sitting quietly in the margin until you go looking.
 
-**Key signature.** One control in the header. Earlier versions guessed, and a
-wrong guess silently mis-pitches every note of that letter — worse than asking.
+**Key signature, read per staff.** Music changes key, and one setting for a
+whole piece is wrong for every note after a modulation — so each staff carries
+the key printed at its own head, shown beside it in the margin. The header
+control names the key where you are reading; changing it retunes every staff in
+that key and leaves a later key change intact.
 
 **Library.** Local, offline, no account. Scores live in IndexedDB on the
 device.
@@ -88,7 +91,8 @@ A classical computer-vision pipeline, not a model, because it has to run offline
 inside a static site:
 
 Otsu threshold → horizontal projection for staff lines → staff-line removal →
-run-length shape tests for noteheads, filled and hollow.
+run-length shape tests for noteheads, filled and hollow → key signature at the
+head of each staff.
 
 Pages are rendered and recognised **one at a time** and released before the
 next: a page at this resolution is ~30 MB of pixels, and holding a seven-page
@@ -102,13 +106,24 @@ gap heuristic collapsed a two-part score into four.
 Pitch is then pure geometry — the number of half-spaces from the bottom staff
 line — mapped through the clef and the key.
 
-**What it does not read**, by design: durations, rests, ties, slurs, dynamics,
-articulation, repeats, time signatures, key signatures. None of them are needed
-to answer "what does this note sound like", and every one of them is a way to be
-wrong.
+Key signatures are read the same way — by position, not by shape. The sharps
+and the flats of a key signature are printed in fixed orders that start in
+completely different places (F♯ on the top line of a treble staff, B♭ on the
+middle line) and never coincide, so counting how many marks fall on consecutive
+expected positions gives both the count and the direction at once. Shape alone
+does not: at this resolution a flat frequently comes apart into a bowl and a
+stem, and a lone bowl looks much like a sharp. Where the marks do not fit either
+pattern the staff reports nothing rather than a guess, and inherits the key in
+force — which is what a key signature does anyway.
 
-Deliberately unhandled: accidentals written in front of a note. A sharp or flat
-on the page won't move the pitch — nudge it with the arrow keys.
+**What it does not read**, by design: durations, rests, ties, slurs, dynamics,
+articulation, repeats, time signatures. None of them are needed to answer "what
+does this note sound like", and every one of them is a way to be wrong.
+
+Deliberately unhandled: accidentals written in front of a note. Those are a
+one-note exception rather than a rule for the staff, and they sit close enough
+to the notehead to be confused with it — so a sharp mid-bar won't move the
+pitch, and you nudge it with the arrow keys instead.
 
 ---
 
@@ -161,7 +176,7 @@ The whole bundle is about 280 KB (93 KB gzipped).
 src/
   lib/
     detect/   types.ts   the data model — deliberately has no concept of time
-              notes.ts   staves, systems, noteheads
+              notes.ts   staves, systems, noteheads, key signatures
               pdf.ts     page-at-a-time import
     audio/    player.ts       one-shot voices, no transport
               instruments.ts  synthesis presets
@@ -173,8 +188,8 @@ src/
 
 ## Known limits
 
-- Accidentals printed next to a note are not read, so a note marked sharp on
-  the page sounds natural until you nudge it.
+- Accidentals printed next to a note are not read — only the key signature is
+  — so a note marked sharp mid-bar sounds natural until you nudge it.
 - Handwritten and heavily ornamented scores read poorly; the detector expects
   clean printed engraving.
 - Grace notes, cue notes and small ossia staves are treated like anything else.

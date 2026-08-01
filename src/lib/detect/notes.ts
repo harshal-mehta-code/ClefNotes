@@ -341,6 +341,271 @@ export function findHeads(
     .sort((a, b) => a.x - b.x);
 }
 
+// --- key signature ---------------------------------------------------------
+
+/**
+ * Where the first sharp and the first flat of a key signature are printed, as
+ * half-spaces above the bottom staff line. They start in completely different
+ * places — F♯ on the top line of a treble staff, B♭ on the middle line — which
+ * is what makes the two readable apart by geometry rather than by shape.
+ */
+const SHARP_START: Record<ClefId, number> = { treble: 8, treble8: 8, bass: 6, alto: 7 };
+const FLAT_START: Record<ClefId, number> = { treble: 4, treble8: 4, bass: 2, alto: 3 };
+/** Each subsequent accidental steps a fourth down or a fifth up, alternating. */
+const SHARP_WALK = [0, -3, 4, -3, -3, 4, -3];
+const FLAT_WALK = [0, 3, -4, 3, -4, 3, -4];
+
+function template(clef: ClefId, flat: boolean): number[] {
+  const walk = flat ? FLAT_WALK : SHARP_WALK;
+  let at = flat ? FLAT_START[clef] : SHARP_START[clef];
+  return walk.map((d, i) => (i === 0 ? at : (at += d)));
+}
+
+interface Glyph {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
+/** Ink-bounded glyphs across the head of a staff, left to right. */
+function headGlyphs(clean: Bitmap, staff: RawStaff): Glyph[] {
+  const sp = staff.spacing;
+  // Kept tight on purpose. Measure numbers and tempo marks are printed just
+  // above the staff, often touching the key signature, and a band that reaches
+  // them welds "17" onto the sharp beside it. A key signature never strays
+  // more than about a space outside the staff, so nothing real is lost.
+  const yTop = Math.max(0, Math.round(staff.top - sp * 1.05));
+  const yBot = Math.min(clean.h - 1, Math.round(staff.bottom + sp * 1.05));
+  const xFrom = Math.max(0, Math.round(staff.left) - 2);
+  const xTo = Math.min(clean.w - 1, Math.round(staff.left + sp * 14), Math.round(staff.right));
+  if (xTo <= xFrom) return [];
+
+  const filled: number[] = [];
+  for (let x = xFrom; x <= xTo; x++) {
+    let n = 0;
+    for (let y = yTop; y <= yBot; y++) if (clean.data[y * clean.w + x]) n++;
+    filled.push(n);
+  }
+
+  // Split on any blank column at all. Every part of a sharp or a flat is
+  // joined to the rest of it, so nothing needs bridging — and bridging costs
+  // dearly here, because a flat's bowl reaches to within a pixel or two of the
+  // next flat's stem, and welding those together shifts every reading along by
+  // half a glyph.
+  const bridge = 0;
+  const spans: Array<[number, number]> = [];
+  let start = -1;
+  let blank = 0;
+  for (let i = 0; i < filled.length; i++) {
+    if (filled[i] > 0) {
+      if (start < 0) start = i;
+      blank = 0;
+    } else if (start >= 0 && ++blank > bridge) {
+      spans.push([start, i - blank]);
+      start = -1;
+    }
+  }
+  if (start >= 0) spans.push([start, filled.length - 1]);
+
+  return spans
+    .map(([a, b]) => {
+      const x0 = xFrom + a;
+      const x1 = xFrom + b;
+
+      // A measure number, a slur or a tempo mark can sit directly above the
+      // key signature, and taking the whole column would swallow it into the
+      // glyph — which is exactly how a flat came back four staff-spaces tall.
+      // So keep only the band of rows that actually belongs to the staff.
+      const runs: Array<[number, number]> = [];
+      const split = Math.max(1, Math.round(sp * 0.22));
+      let start = -1;
+      let blank = 0;
+      for (let y = yTop; y <= yBot; y++) {
+        let inked = false;
+        for (let x = x0; x <= x1 && !inked; x++) inked = clean.data[y * clean.w + x] === 1;
+        if (inked) {
+          if (start < 0) start = y;
+          blank = 0;
+        } else if (start >= 0 && ++blank > split) {
+          runs.push([start, y - blank]);
+          start = -1;
+        }
+      }
+      if (start >= 0) runs.push([start, yBot]);
+      if (!runs.length) return null;
+
+      const overlap = ([r0, r1]: [number, number]) =>
+        Math.max(0, Math.min(r1, staff.bottom) - Math.max(r0, staff.top));
+      const best = runs.reduce((a, r) => (overlap(r) > overlap(a) ? r : a));
+      return { x0, x1, y0: best[0], y1: best[1] };
+    })
+    .filter((g): g is Glyph => g != null);
+}
+
+/** How far the ink reaches across each row of a glyph, in pixels. */
+function rowWidths(clean: Bitmap, g: Glyph): number[] {
+  const out: number[] = [];
+  for (let y = g.y0; y <= g.y1; y++) {
+    let lo = -1;
+    let hi = -1;
+    for (let x = g.x0; x <= g.x1; x++) {
+      if (clean.data[y * clean.w + x]) {
+        if (lo < 0) lo = x;
+        hi = x;
+      }
+    }
+    out.push(lo < 0 ? 0 : hi - lo + 1);
+  }
+  return out;
+}
+
+/** How wide the ink runs, as a fraction of the glyph, across a horizontal band. */
+function bandWidth(clean: Bitmap, g: Glyph, from: number, to: number): number {
+  const rows = rowWidths(clean, g);
+  const a = Math.round((rows.length - 1) * from);
+  const b = Math.round((rows.length - 1) * to);
+  return Math.max(...rows.slice(a, b + 1)) / (g.x1 - g.x0 + 1);
+}
+
+/**
+ * Which y a key-signature accidental actually names.
+ *
+ * Not the middle of the glyph: a flat is a bowl with a stem above it, and how
+ * far that stem rises is a matter of house style — one engraving here draws it
+ * clear above the staff, which throws any fixed fraction of the height. The
+ * pitch is the middle of the *wide* part, which is the bowl of a flat and the
+ * body of a sharp alike.
+ */
+function inkCentre(clean: Bitmap, g: Glyph): number {
+  const rows = rowWidths(clean, g);
+  const cut = Math.max(...rows) * 0.62;
+  let first = -1;
+  let last = -1;
+  rows.forEach((w, i) => {
+    if (w < cut) return;
+    if (first < 0) first = i;
+    last = i;
+  });
+  return first < 0 ? (g.y0 + g.y1) / 2 : g.y0 + (first + last) / 2;
+}
+
+/**
+ * A sharp is two full-height strokes, so it is wide at the top and wide at the
+ * bottom. A flat is a stem with a bowl hanging off the lower half: narrow on
+ * top, wide underneath. A natural is a stroke on the left at the top and a
+ * stroke on the right at the bottom, so it is narrow at both — and naturals
+ * matter, because they cancel a key rather than declaring one.
+ */
+function classify(clean: Bitmap, g: Glyph): 'sharp' | 'flat' | 'natural' {
+  const top = bandWidth(clean, g, 0, 0.26);
+  const bottom = bandWidth(clean, g, 0.74, 1);
+  if (top > 0.55) return 'sharp';
+  return bottom > 0.55 ? 'flat' : 'natural';
+}
+
+/**
+ * Read the key signature at the head of a staff.
+ *
+ * Returns sharps (negative for flats), or null when the evidence disagrees with
+ * itself. Null is the important case: a wrong key silently mis-pitches every
+ * note of that letter for the whole staff, which is exactly the kind of quiet,
+ * plausible-sounding error that made the previous version untrustworthy. Better
+ * to leave it at the default and let someone set it in one tap.
+ *
+ * Two independent signals have to agree — what the glyphs look like, and where
+ * they sit. Shape alone confuses a common-time C with a flat; position alone
+ * cannot tell a natural from the accidental it cancels.
+ */
+export function readKeySignature(clean: Bitmap, staff: RawStaff, clef: ClefId): number | null {
+  const sp = staff.spacing;
+  const glyphs = headGlyphs(clean, staff);
+
+  // The key signature lives between the clef and the time signature. Both of
+  // those are far bigger than an accidental, which is what marks the ends.
+  // Height alone will not separate them: some houses draw a flat with a stem
+  // rising clear above the staff, as tall as a bass clef. But only a flat is
+  // tall *and* narrow at the top, because that height is all stem.
+  const bulky = (g: Glyph) => {
+    const w = g.x1 - g.x0 + 1;
+    const h = g.y1 - g.y0 + 1;
+    if (w > sp * 1.5 || h > sp * 4.6) return true;
+    return h > sp * 3.1 && classify(clean, g) !== 'flat';
+  };
+  let from = 0;
+  for (let i = 0; i < glyphs.length && glyphs[i].x0 - staff.left < sp * 6; i++) {
+    if (bulky(glyphs[i])) from = i + 1;
+  }
+  const zone: Glyph[] = [];
+  for (let i = from; i < glyphs.length; i++) {
+    if (bulky(glyphs[i])) break;
+    zone.push(glyphs[i]);
+  }
+
+  // A flat is a bowl with a stem, and at this size the two often come apart:
+  // the bowl's tip stops a pixel short of the stem it hangs from. So a bare
+  // vertical stroke is dropped, and what is left is one blob per accidental —
+  // sometimes the whole flat, sometimes just its bowl, which is the part that
+  // names the pitch either way.
+  const marks = zone
+    .filter((g) => {
+      const w = g.x1 - g.x0 + 1;
+      const h = g.y1 - g.y0 + 1;
+      return w >= sp * 0.34 && w <= sp * 1.45 && h >= sp * 0.8 && h <= sp * 4.4;
+    })
+    .map((g) => ({ g, kind: classify(clean, g), step: (staff.lines[4] - inkCentre(clean, g)) / (sp / 2) }));
+
+  /**
+   * Walk the marks against what a key signature of that many sharps or flats
+   * looks like. The test is *where* they sit, not what they look like: the two
+   * orders start in completely different places — F♯ on the top line of a
+   * treble staff, B♭ on the middle line — and never coincide, whereas shape
+   * alone confuses a lone bowl with a sharp and a common-time C with a flat.
+   */
+  const walk = (flat: boolean) => {
+    const want = template(clef, flat);
+    let n = 0;
+    let prev: Glyph | null = null;
+    let broken = false;
+    for (const m of marks) {
+      if (n >= 7) break;
+      // A natural cancels the key before it; it is never part of the new one.
+      if (m.kind === 'natural') continue;
+      const adjacent = !prev || m.g.x0 - prev.x1 <= sp * 1.3;
+      if (Math.abs(m.step - want[n]) <= 0.9 && adjacent) {
+        n++;
+        prev = m.g;
+        continue;
+      }
+      if (!n) continue; // still in front of the signature, in the clef
+      // The run ended. Something accidental-shaped butting up against it means
+      // the reading is off by something, and a wrong key is worse than no key.
+      if (adjacent) broken = true;
+      break;
+    }
+    return { n, broken };
+  };
+
+  // The two readings compete rather than veto each other. One accidental of a
+  // four-flat signature can land within a whisker of where the first sharp
+  // would go, and letting that near-miss disqualify the reading that explains
+  // every mark would throw away the answer.
+  const sharp = walk(false);
+  const flat = walk(true);
+  if (sharp.n !== flat.n) {
+    const best = flat.n > sharp.n ? flat : sharp;
+    return best.broken ? null : flat.n > sharp.n ? -flat.n : sharp.n;
+  }
+  if (sharp.n) return null; // equally good both ways, so neither is trusted
+
+  // Nothing matched. Naturals with nothing after them are a key being cancelled,
+  // which is positive evidence of C. Finding nothing at all is not evidence of
+  // anything — it is just as likely that the signature was there and could not
+  // be separated from whatever was printed beside it — so that answers null and
+  // the key is inherited instead.
+  return marks.length && marks.every((m) => m.kind === 'natural') ? 0 : null;
+}
+
 /** Default clef by where a staff sits in its system. */
 export function guessClef(positionInSystem: number, systemSize: number): ClefId {
   if (systemSize <= 1) return 'treble';
@@ -368,6 +633,7 @@ export function readPage(image: ImageData, pageIndex: number): PageReading {
     system.forEach((staffIndex, positionInSystem) => {
       const s = raw[staffIndex];
       const id = `p${pageIndex}s${staffIndex}`;
+      const clef = guessClef(positionInSystem, system.length);
       staves.push({
         id,
         page: pageIndex,
@@ -380,7 +646,8 @@ export function readPage(image: ImageData, pageIndex: number): PageReading {
         bottom: s.bottom,
         left: s.left,
         right: s.right,
-        clef: guessClef(positionInSystem, system.length),
+        clef,
+        sharps: readKeySignature(clean, s, clef),
       });
 
       findHeads(clean, s).forEach((h, i) => {

@@ -63,7 +63,14 @@ interface AppState {
   setStaffClef: (staffId: string, clef: ClefId, scope?: 'all' | 'one') => number;
   /** Set several staves at once — how "only this staff" undoes a score-wide change. */
   applyClefs: (clefs: Record<string, ClefId>) => void;
-  setSharps: (sharps: number) => void;
+  /**
+   * Change the key. With `from` given, only the staves currently in that key
+   * change — so correcting the key of one section of a score that modulates
+   * leaves the other sections alone.
+   */
+  setSharps: (sharps: number, from?: number) => void;
+  /** Set the key on one staff, for a score that changes key partway. */
+  setStaffSharps: (staffId: string, sharps: number) => void;
   select: (noteId: string | null) => void;
   setVisiblePage: (page: number) => void;
   nudgeSelected: (steps: number) => void;
@@ -182,10 +189,30 @@ export const useApp = create<AppState>((set, get) => ({
     persist(next);
   },
 
-  setSharps: (sharps) => {
+  setSharps: (sharps, from) => {
     const score = get().score;
     if (!score) return;
-    const next = { ...score, sharps };
+    // Staves carry their own key, so this has to reach them too, or the control
+    // would appear to do nothing. Restricting it to the staves already in the
+    // key being shown is what keeps a modulation intact: retuning the verse
+    // should not silently rewrite the key change that follows it.
+    const hit = (s: (typeof score.staves)[number]) => from == null || s.sharps === from;
+    const next = {
+      ...score,
+      sharps: from == null || score.sharps === from ? sharps : score.sharps,
+      staves: score.staves.map((s) => (hit(s) ? { ...s, sharps } : s)),
+    };
+    set({ score: next });
+    persist(next);
+  },
+
+  setStaffSharps: (staffId, sharps) => {
+    const score = get().score;
+    if (!score) return;
+    const next = {
+      ...score,
+      staves: score.staves.map((s) => (s.id === staffId ? { ...s, sharps } : s)),
+    };
     set({ score: next });
     persist(next);
   },
