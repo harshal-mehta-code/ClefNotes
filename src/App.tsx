@@ -20,7 +20,7 @@ export default function App() {
   const setShowNotes = useApp((s) => s.setShowNotes);
   const setSharps = useApp((s) => s.setSharps);
   const visiblePage = useApp((s) => s.visiblePage);
-  const importFile = useApp((s) => s.importFile);
+  const importFiles = useApp((s) => s.importFiles);
   const [showRoll, setShowRoll] = useState(true);
 
   // The key shown is the one in force where you are reading, since a score can
@@ -32,16 +32,16 @@ export default function App() {
     return here?.sharps ?? score.sharps;
   }, [score, visiblePage]);
 
-  // A PDF dropped anywhere on the window imports.
+  // A PDF or a picture dropped anywhere on the window imports.
   useEffect(() => {
     const over = (e: DragEvent) => {
       if (e.dataTransfer?.types.includes('Files')) e.preventDefault();
     };
     const drop = (e: DragEvent) => {
-      const f = e.dataTransfer?.files?.[0];
-      if (!f) return;
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (!files.length) return;
       e.preventDefault();
-      void importFile(f);
+      void importFiles(files);
     };
     window.addEventListener('dragover', over);
     window.addEventListener('drop', drop);
@@ -49,7 +49,7 @@ export default function App() {
       window.removeEventListener('dragover', over);
       window.removeEventListener('drop', drop);
     };
-  }, [importFile]);
+  }, [importFiles]);
 
   const families = instrumentsByFamily();
 

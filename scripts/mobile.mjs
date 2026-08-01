@@ -33,6 +33,17 @@ const page = await ctx.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 await page.goto(BASE, { waitUntil: 'networkidle' });
+
+// Taking a photo of the page in front of you is the point of being on a phone,
+// so the camera has to be one tap from the front door — and `capture` is what
+// opens the camera rather than the photo library.
+const camera = page.locator('text=Take a photo');
+const cameraInput = page.locator('input[capture]');
+const shortcut =
+  (await camera.count()) === 1 &&
+  (await camera.isVisible()) &&
+  (await cameraInput.getAttribute('accept')) === 'image/*';
+
 await page.locator('input[type=file]').first().setInputFiles(PDF);
 for (let i = 0; i < 200; i++) {
   const s = await page.evaluate(() => {
@@ -61,6 +72,8 @@ const check = (name, pass, detail = '') => {
   results.push(pass);
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
 };
+
+check('the camera is one tap from the front door', shortcut);
 
 // Header: everything that is meant to be reachable has to actually be on screen.
 const header = await page.evaluate(() => {

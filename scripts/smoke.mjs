@@ -41,7 +41,8 @@ page.on('console', (m) => {
 
 await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.waitForTimeout(600);
-check('the app loads to the drop zone', (await page.locator('text=Drop a PDF here').count()) === 1);
+const atDoor = async () => (await page.locator('text=Choose a file').count()) === 1;
+check('the app loads to the drop zone', await atDoor());
 
 // A device that used an earlier ClefNotes still holds scores in the shape that
 // version saved. Reading a page count off one of those took the whole app down
@@ -74,8 +75,7 @@ await page.reload({ waitUntil: 'networkidle' });
 await page.waitForTimeout(900);
 check(
   'a score from an older version does not blank the app',
-  (await page.locator('text=Drop a PDF here').count()) === 1 &&
-    (await page.locator('text=ClefNotes stopped').count()) === 0,
+  (await atDoor()) && (await page.locator('text=ClefNotes stopped').count()) === 0,
 );
 errors.length = 0;
 

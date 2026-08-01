@@ -24,7 +24,60 @@ export interface Bitmap {
 
 // --- threshold -------------------------------------------------------------
 
-export function toBitmap(image: ImageData): Bitmap {
+/**
+ * Ink or paper, decided against the local average rather than one number for
+ * the whole page.
+ *
+ * A rendered PDF is lit perfectly by construction, and a single threshold is
+ * exactly right for it. A photograph is not: one corner in shadow is darker
+ * than the printed staff lines in the bright corner, so any global cut either
+ * floods the shadow with ink or loses the music in the light. Comparing each
+ * pixel with the average of the page around it removes the lighting and leaves
+ * the printing, which is the only part that varies over a few pixels.
+ */
+function localBitmap(image: ImageData): Bitmap {
+  const { width: w, height: h, data } = image;
+  const gray = new Uint8Array(w * h);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    gray[p] = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+  }
+
+  // Summed-area table, so a window average costs four lookups whatever its size.
+  const sum = new Uint32Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += gray[y * w + x];
+      sum[(y + 1) * (w + 1) + x + 1] = sum[y * (w + 1) + x + 1] + row;
+    }
+  }
+
+  // Wide enough to average over paper rather than over the notehead you are
+  // standing on, which would make every thick stroke its own background.
+  const r = Math.max(8, Math.round(Math.min(w, h) / 28));
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - r);
+    const y1 = Math.min(h - 1, y + r);
+    for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, x - r);
+      const x1 = Math.min(w - 1, x + r);
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+      const total =
+        sum[(y1 + 1) * (w + 1) + x1 + 1] -
+        sum[y0 * (w + 1) + x1 + 1] -
+        sum[(y1 + 1) * (w + 1) + x0] +
+        sum[y0 * (w + 1) + x0];
+      // A tenth below the local average: paper is flat, so anything meaningfully
+      // darker than its surroundings is something printed on it.
+      out[y * w + x] = gray[y * w + x] * area * 100 < total * 88 ? 1 : 0;
+    }
+  }
+  return { w, h, data: out };
+}
+
+export function toBitmap(image: ImageData, local = false): Bitmap {
+  if (local) return localBitmap(image);
   const { width: w, height: h, data } = image;
   const gray = new Uint8Array(w * h);
   const hist = new Uint32Array(256);
@@ -858,9 +911,12 @@ export interface PageReading {
   notes: DetectedNote[];
 }
 
-/** Read one rendered page. */
-export function readPage(image: ImageData, pageIndex: number): PageReading {
-  const bm = toBitmap(image);
+/**
+ * Read one rendered page. `local` picks the thresholder that copes with uneven
+ * lighting, which a photograph needs and a rendered PDF does not.
+ */
+export function readPage(image: ImageData, pageIndex: number, local = false): PageReading {
+  const bm = toBitmap(image, local);
   const raw = findStaves(bm);
   if (!raw.length) return { staves: [], notes: [] };
 

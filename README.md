@@ -1,9 +1,9 @@
 # ClefNotes
 
-**Drop in a PDF of sheet music. Click any note on the page and hear it.**
+**Bring in a PDF, or photograph the page. Tap any note and hear it.**
 
 You get your own score back — the page exactly as it was printed — with every
-notehead made playable. Tap one to hear that pitch. Drag along a phrase to hear
+notehead made playable. Tap one to hear that pitch, and tap along a line to hear
 the phrase. Pick the instrument you want it in. A piano roll and a keyboard
 underneath show what you are hearing.
 
@@ -45,7 +45,12 @@ the one that is reliable.
 
 ## What's in it
 
-**The sheet.** Your PDF, page by page, with a transparent layer over it that
+**Import.** A PDF, a scan, a screenshot, or a photo taken there and then — the
+camera button opens straight into it on a phone. Several photos become the
+pages of one score, since sheet music is rarely one page and that is how anyone
+would shoot it.
+
+**The sheet.** Your page, page by page, with a transparent layer over it that
 knows where the staves and noteheads are. Detected notes carry a faint dot, so
 you can see what the app found — toggle it off when you want a clean page.
 Hovering shows the pitch under the pointer.
@@ -105,6 +110,16 @@ Otsu threshold → horizontal projection for staff lines → staff-line removal 
 run-length shape tests for filled noteheads and a ring test for hollow ones →
 key signature at the head of each staff → accidentals printed beside each
 notehead.
+
+A photograph needs two things a PDF does not. It is **straightened** first:
+staff lines are the strongest horizontal thing on a page of music, so the tilt
+that stacks the most ink into the fewest rows is the tilt that makes them level,
+and a single degree is enough to smear five lines into one grey band and lose
+the staff entirely. And it is thresholded **against the local average** rather
+than one number for the whole page, because a corner in shadow is darker than
+the printed staff lines in the bright corner, and no global cut can separate
+those. A rendered PDF is flat and evenly lit by construction and keeps the
+simpler treatment.
 
 Pages are rendered and recognised **one at a time** and released before the
 next: a page at this resolution is ~30 MB of pixels, and holding a seven-page
@@ -191,6 +206,7 @@ npm run build        # production build into dist/
 npm run preview      # serve the build
 npm run smoke -- score.pdf   # end-to-end browser checks against the preview
 npm run mobile -- score.pdf  # the same app at phone width, with real touch
+npm run photo -- score.pdf   # the same page again, as a photograph
 ```
 
 The smoke test drives a real browser against the production build, imports a
@@ -198,6 +214,12 @@ PDF you point it at, clicks a notehead, and measures the **master audio bus** to
 confirm sound actually came out. That last part matters: an earlier version
 verified audio with an offline render, which passed happily while live playback
 was completely silent.
+
+The photo run needs no fixture: it imports the PDF, takes the page the app
+itself rendered, tilts it, shades a corner, softens it and re-compresses it as a
+JPEG, then feeds that back in. The PDF import is the answer key — the same page,
+read twice, once the easy way. On the test chart 210 of 219 noteheads survive the
+round trip.
 
 The mobile run is separate because nothing it checks can fail at desktop width.
 A swipe has to scroll the page and stay silent, a tap has to sound one note, the
@@ -255,6 +277,11 @@ src/
 - Double sharps and double flats are not read, and cannot be set.
 - Handwritten and heavily ornamented scores read poorly; the detector expects
   clean printed engraving.
+- A photo has to be square-on and filling the frame. Tilt is corrected, but
+  perspective — the page leaning away from the camera, so the lines converge —
+  is not, and that is the usual reason a photo finds no staves.
+- On a photograph, the counter of a lyric letter under the staff is occasionally
+  read as a hollow notehead.
 - Grace notes, cue notes and small ossia staves are treated like anything else.
 - A tempo mark printed above the first staff can leave a note-shaped mark or
   two at the start of a piece.

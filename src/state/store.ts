@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import Dexie, { type Table } from 'dexie';
 import { player } from '../lib/audio/player';
 import { INSTRUMENTS, type InstrumentId } from '../lib/audio/instruments';
-import { importPdf } from '../lib/detect/pdf';
+import { importScore } from '../lib/detect/import';
 import {
   noteMidi,
   type Alter,
@@ -60,7 +60,8 @@ interface AppState {
   zoomBy: (step: number) => void;
   setShowNotes: (on: boolean) => void;
 
-  importFile: (file: File) => Promise<void>;
+  /** A PDF, or one or more pictures that become the pages of one score. */
+  importFiles: (files: File[]) => Promise<void>;
   openScore: (id: string) => Promise<void>;
   deleteScore: (id: string) => Promise<void>;
   refreshLibrary: () => Promise<void>;
@@ -160,10 +161,11 @@ export const useApp = create<AppState>((set, get) => ({
     set({ zoom: Math.min(3, Math.max(0.6, Math.round((get().zoom + step) * 100) / 100)) }),
   setShowNotes: (showNotes) => set({ showNotes }),
 
-  importFile: async (file) => {
+  importFiles: async (files) => {
+    if (!files.length) return;
     set({ loading: true, error: null, progress: { label: 'Opening…', fraction: 0 } });
     try {
-      const score = await importPdf(file, (label, fraction) =>
+      const score = await importScore(files, (label, fraction) =>
         set({ progress: { label, fraction } }),
       );
       await db.scores.put(score);

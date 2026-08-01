@@ -1,14 +1,17 @@
 import { readPage } from './notes';
+import { renderPhoto } from './photo';
 import type { DetectedNote, DetectedStaff, PageScore, ScorePage } from './types';
 
 /**
- * Turning a PDF into a readable, clickable score.
+ * Turning whatever you have into a readable, clickable score.
  *
- * The rendered page is the product, not an intermediate step — you look at your
- * own sheet music, and the app only adds the ability to hear it. So the image
- * is kept at a resolution worth reading, and pages are processed one at a time
- * and released, because a page at this size is ~30 MB of pixels and holding a
- * whole score would be enough for a phone to kill the tab.
+ * A PDF, a photo of the music on the stand, a scan in your camera roll — they
+ * all end in the same place: a picture of a page, and the staves and noteheads
+ * found in its coordinates. The picture is the product, not an intermediate
+ * step. You look at your own sheet music and the app only adds the ability to
+ * hear it, so it is kept at a resolution worth reading, and pages are handled
+ * one at a time and released — a page at this size is ~30 MB of pixels and
+ * holding a whole score at once is enough for a phone to kill the tab.
  */
 
 let pdfjsPromise: Promise<typeof import('pdfjs-dist')> | null = null;
@@ -33,19 +36,66 @@ export interface ImportProgress {
   (label: string, fraction: number): void;
 }
 
-export async function importPdf(
-  file: File,
-  onProgress?: ImportProgress,
-): Promise<PageScore> {
+const isPdf = (f: File) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+const isImage = (f: File) =>
+  f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|heic|heif|avif)$/i.test(f.name);
+
+/** One page, rendered and read. */
+interface Rendered {
+  canvas: HTMLCanvasElement;
+  /** Photographs need the thresholder that copes with uneven light. */
+  local: boolean;
+}
+
+/**
+ * Import a PDF, or one or more images.
+ *
+ * Several photos become several pages of one score, because sheet music is
+ * rarely one page and photographing it a page at a time is how anyone would do
+ * it. Mixing a PDF in with them is refused rather than guessed at.
+ */
+export async function importScore(files: File[], onProgress?: ImportProgress): Promise<PageScore> {
+  const usable = files.filter((f) => isPdf(f) || isImage(f));
+  if (!usable.length) {
+    throw new Error(
+      'ClefNotes opens PDFs and pictures of sheet music. That file is neither — try a PDF, or a photo of the page.',
+    );
+  }
+  const pdfs = usable.filter(isPdf);
+  if (pdfs.length && pdfs.length !== usable.length) {
+    throw new Error('Import a PDF on its own, or photos on their own — not both at once.');
+  }
+  if (pdfs.length > 1) throw new Error('One PDF at a time, please.');
+
+  const title =
+    (usable.length > 1 ? 'Sheet music' : usable[0].name.replace(/\.[^.]+$/, ''))
+      .replace(/[_-]+/g, ' ')
+      .trim() || 'Untitled score';
+
+  return assemble(
+    pdfs.length ? renderPdf(pdfs[0], onProgress) : renderPhotos(usable, onProgress),
+    title,
+    pdfs.length ? 'PDF' : 'picture',
+  );
+}
+
+async function* renderPhotos(files: File[], onProgress?: ImportProgress): AsyncGenerator<Rendered> {
+  for (let i = 0; i < files.length; i++) {
+    onProgress?.(
+      files.length > 1 ? `Reading picture ${i + 1} of ${files.length}…` : 'Reading…',
+      i / files.length,
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    yield { canvas: await renderPhoto(files[i]), local: true };
+  }
+}
+
+async function* renderPdf(file: File, onProgress?: ImportProgress): AsyncGenerator<Rendered> {
   const lib = await pdfjs();
   const buf = await file.arrayBuffer();
   const doc = await lib.getDocument({ data: buf }).promise;
   const count = Math.min(doc.numPages, MAX_PAGES);
   if (!count) throw new Error('That PDF has no pages ClefNotes could open.');
-
-  const pages: ScorePage[] = [];
-  const staves: DetectedStaff[] = [];
-  const notes: DetectedNote[] = [];
 
   for (let i = 0; i < count; i++) {
     onProgress?.(`Reading page ${i + 1} of ${count}…`, i / count);
@@ -64,32 +114,47 @@ export async function importPdf(
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     await page.render({ canvasContext: ctx, viewport }).promise;
+    page.cleanup();
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const reading = readPage(imageData, i);
+    yield { canvas, local: false };
+  }
+}
+
+/** Read each page as it arrives, and let go of it before taking the next. */
+async function assemble(
+  source: AsyncGenerator<Rendered>,
+  title: string,
+  kind: string,
+): Promise<PageScore> {
+  const pages: ScorePage[] = [];
+  const staves: DetectedStaff[] = [];
+  const notes: DetectedNote[] = [];
+
+  for await (const { canvas, local } of source) {
+    const index = pages.length;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) continue;
+    const reading = readPage(ctx.getImageData(0, 0, canvas.width, canvas.height), index, local);
     staves.push(...reading.staves);
     notes.push(...reading.notes);
-
     pages.push({
-      index: i,
+      index,
       image: canvas.toDataURL('image/jpeg', 0.82),
       width: canvas.width,
       height: canvas.height,
     });
-
     // Release the page before rendering the next one.
     canvas.width = 0;
     canvas.height = 0;
-    page.cleanup();
   }
 
   if (!staves.length) {
     throw new Error(
-      'No staves were found in that PDF. ClefNotes reads clean, printed sheet music — a photo, a scan that is skewed or faint, or handwriting will not come through.',
+      kind === 'PDF'
+        ? 'No staves were found in that PDF. ClefNotes reads printed sheet music; handwriting will not come through.'
+        : 'No staves were found in that picture. Photograph the page square-on and filling the frame, in even light, with the music in focus — a page at an angle or half in shadow will not read.',
     );
   }
-
-  const title = file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Untitled score';
 
   inheritKeys(staves);
 

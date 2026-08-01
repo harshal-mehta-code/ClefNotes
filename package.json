@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "smoke": "node scripts/smoke.mjs",
-    "mobile": "node scripts/mobile.mjs"
+    "mobile": "node scripts/mobile.mjs",
+    "photo": "node scripts/photo.mjs"
   },
   "dependencies": {
     "dexie": "^4.0.10",
