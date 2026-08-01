@@ -325,11 +325,41 @@
   pointer-events: none;
 }
 
+/* The note being corrected in the editor. */
+.score-host g.note.cn-selected .notehead use {
+  fill: rgb(var(--violet));
+  stroke: rgb(var(--violet));
+  filter: drop-shadow(0 0 10px rgb(var(--violet)));
+}
+.score-host g.note.cn-selected .stem path {
+  stroke: rgb(var(--violet));
+}
+
+/* While editing, notes advertise that they are clickable. */
+.score-host.cn-editing g.note {
+  cursor: pointer;
+}
+.score-host.cn-editing g.note:hover .notehead use {
+  fill: rgb(var(--violet));
+  opacity: 0.7;
+}
+
 /* Step mode: the note you're parked on. */
 .score-host g.note.cn-step .notehead use {
   fill: rgb(var(--blue));
   stroke: rgb(var(--blue));
   filter: drop-shadow(0 0 10px rgb(var(--blue)));
+}
+
+@keyframes cn-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

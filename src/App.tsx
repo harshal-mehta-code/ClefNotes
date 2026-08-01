@@ -5,6 +5,10 @@ import ImportPanel from './components/library/ImportPanel';
 import Studio from './components/studio/Studio';
 import PracticeLab from './components/lab/PracticeLab';
 import VoxPanel from './components/vox/VoxPanel';
+import Toasts from './components/ui/Toasts';
+import CommandPalette from './components/ui/CommandPalette';
+import Welcome from './components/ui/Welcome';
+import { clearShareHash, readShareLink } from './lib/share/link';
 
 const TABS: Array<{ id: ViewId; label: string; hint: string }> = [
   { id: 'library', label: 'Library', hint: 'Your scores' },
@@ -27,9 +31,23 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
+      // A shared link takes priority: someone followed it to hear something
+      // specific, so open that before anything else.
+      const shared = await readShareLink();
+      if (shared) {
+        clearShareHash();
+        await useApp.getState().loadScore(shared.musicXml, {
+          source: 'musicxml',
+          id: `shared-${Date.now().toString(36)}`,
+        });
+        if (shared.mixes?.length) useApp.getState().setAllMixes(shared.mixes);
+        if (shared.bpm) useApp.getState().patchTransport({ bpm: shared.bpm });
+        if (shared.loop) useApp.getState().setLoopBars(shared.loop);
+      }
       await seedShelf();
       await refreshLibrary();
       await refreshStats();
+      await useApp.getState().checkAchievements();
     })();
   }, [seedShelf, refreshLibrary, refreshStats]);
 
@@ -115,6 +133,10 @@ export default function App() {
         {view === 'lab' && <PracticeLab />}
         {view === 'vox' && <VoxPanel />}
       </main>
+
+      <Toasts />
+      <CommandPalette />
+      <Welcome />
     </div>
   );
 }

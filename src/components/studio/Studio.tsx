@@ -6,6 +6,9 @@ import Transport from './Transport';
 import Mixer from './Mixer';
 import Karaoke from './Karaoke';
 import ExportMenu from './ExportMenu';
+import Keyboard from './Keyboard';
+import NoteEditor from './NoteEditor';
+import ShareButton from './ShareButton';
 import { Chip } from '../ui/primitives';
 
 export default function Studio() {
@@ -19,7 +22,14 @@ export default function Studio() {
   const reEngrave = useApp((s) => s.reEngrave);
   const loopBars = useApp((s) => s.loopBars);
   const setLoopBars = useApp((s) => s.setLoopBars);
-  const [showMixer, setShowMixer] = useState(true);
+  const editing = useApp((s) => s.editing);
+  const setEditing = useApp((s) => s.setEditing);
+  // The mixer is a permanent column on a desktop and an on-demand sheet on a
+  // phone, so it starts closed only where it would cover the music.
+  const [showMixer, setShowMixer] = useState(() =>
+    typeof window === 'undefined' ? true : window.innerWidth >= 768,
+  );
+  const [showKeys, setShowKeys] = useState(true);
 
   if (!score) {
     return (
@@ -73,9 +83,20 @@ export default function Studio() {
               Loop {loopBars[0]}–{loopBars[1]} ✕
             </Chip>
           )}
+          <Chip on={showKeys} onClick={() => setShowKeys((v) => !v)} title="Piano keyboard">
+            Keys
+          </Chip>
+          <Chip
+            on={editing}
+            onClick={() => setEditing(!editing)}
+            title="Correct wrong notes — essential after a PDF import"
+          >
+            Fix notes
+          </Chip>
           <Chip on={showMixer} onClick={() => setShowMixer((v) => !v)}>
             Mixer
           </Chip>
+          <ShareButton />
           <ExportMenu />
         </div>
       </header>
@@ -112,16 +133,48 @@ export default function Studio() {
             </div>
           )}
 
+          {showKeys && (
+            <div className="shrink-0 border-t-[1.5px] border-ink">
+              <Keyboard height={84} />
+            </div>
+          )}
+          <NoteEditor />
           <Karaoke />
           <Transport />
         </div>
 
+        {/* Desktop: a fixed column. */}
         {showMixer && (
           <aside className="hidden w-[286px] shrink-0 border-l-[1.5px] border-ink bg-panel md:block">
             <Mixer />
           </aside>
         )}
       </div>
+
+      {/* Phone: the same mixer as a sheet, because per-part control is the
+          whole point of the app and hiding it on mobile would gut it. */}
+      {showMixer && (
+        <div className="md:hidden">
+          <div
+            className="fixed inset-0 z-[380] bg-[rgb(var(--sunk))]/70"
+            onClick={() => setShowMixer(false)}
+            aria-hidden
+          />
+          <aside
+            className="fixed inset-x-0 bottom-0 z-[390] max-h-[72vh] overflow-y-auto border-t-[1.5px] border-ink bg-panel"
+            role="dialog"
+            aria-label="Part mixer"
+          >
+            <div className="sticky top-0 flex items-center gap-2 border-b border-rule bg-panel px-3 py-2">
+              <span className="lbl">Parts &amp; sound</span>
+              <button className="btn btn-ghost ml-auto" onClick={() => setShowMixer(false)}>
+                Close
+              </button>
+            </div>
+            <Mixer />
+          </aside>
+        </div>
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { centsOff, hzToMidi, PitchTracker } from '../../lib/audio/pitch';
 import { heatOf, recordBars, type Heat } from '../../lib/db/db';
 import { midiName } from '../../lib/score/types';
 import { Chip, Meter, Panel, Stat } from '../ui/primitives';
+import EarTrainer from './EarTrainer';
 
 const HEAT_COLOUR: Record<Heat, string> = {
   untouched: 'rgb(var(--sunk))',
@@ -202,6 +203,10 @@ export default function PracticeLab() {
               Reset map
             </Chip>
           </div>
+        </Panel>
+
+        <Panel title="Ear training">
+          <EarTrainer />
         </Panel>
 
         <Panel title="Tempo ramp">

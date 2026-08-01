@@ -26,7 +26,10 @@ const browser = await chromium.launch({
   executablePath: CHROME,
   args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'],
 });
+const context = browser.contexts()[0] ?? (await browser.newContext());
+await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE }).catch(() => {});
 const page = await browser.newPage({ viewport: { width: 1500, height: 940 } });
+await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE }).catch(() => {});
 
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
@@ -36,6 +39,14 @@ page.on('console', (m) => {
 
 await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.waitForTimeout(800);
+
+// A fresh profile gets the welcome screen; a returning one does not.
+const welcome = page.locator('[aria-label="Welcome to ClefNotes"]');
+check('first run shows the welcome screen', (await welcome.count()) === 1);
+if (await welcome.count()) {
+  await page.locator("button:has-text(\"I'll look around\")").click();
+  await page.waitForTimeout(400);
+}
 
 check('shelf seeds into the library', (await page.locator('article').count()) >= 4);
 
@@ -85,6 +96,74 @@ const loop = await page.evaluate(() => {
   return { on: s.transport.loop, a: s.transport.loopStartQ, b: s.transport.loopEndQ };
 });
 check('loop range maps bars to quarter notes', loop.on && loop.a === 4 && loop.b === 16, JSON.stringify(loop));
+
+// --- the note editor -------------------------------------------------------
+await page.locator('button:has-text("Fix notes")').click();
+await page.locator('.score-host g.note .notehead use').first().click({ force: true });
+await page.waitForTimeout(500);
+const pitchBefore = await page.evaluate(() => {
+  const s = window.__cn.getState().score;
+  return s.notes.find((n) => n.part === 0 && n.ordinal === 0).midi;
+});
+await page.locator('button:has-text("♯ up")').click();
+await page.waitForTimeout(3500);
+const edited = await page.evaluate(() => {
+  const s = window.__cn.getState().score;
+  return { midi: s.notes.find((n) => n.part === 0 && n.ordinal === 0).midi, total: s.notes.length };
+});
+check('editing raises a note by a semitone', edited.midi === pitchBefore + 1, `${pitchBefore} → ${edited.midi}`);
+
+await page.locator('button:has-text("Undo")').click();
+await page.waitForTimeout(3500);
+const undone = await page.evaluate(
+  () => window.__cn.getState().score.notes.find((n) => n.part === 0 && n.ordinal === 0).midi,
+);
+check('undo restores the original pitch', undone === pitchBefore);
+await page.locator('button:has-text("Fix notes")').click();
+
+// --- share links -----------------------------------------------------------
+// Exercised through the real button, then followed like a recipient would.
+await page.locator('button:has-text("Share")').click();
+await page.waitForTimeout(1200);
+const shareUrl = await page.evaluate(() => navigator.clipboard.readText().catch(() => ''));
+check('share button produces a link', shareUrl.includes('#s='), `${Math.round(shareUrl.length / 1024)} KB`);
+
+if (shareUrl.includes('#s=')) {
+  const recipient = await browser.newPage();
+  await recipient.goto(shareUrl, { waitUntil: 'networkidle' });
+  await recipient.waitForTimeout(7000);
+  const received = await recipient.evaluate(() => {
+    const s = window.__cn.getState().score;
+    return s ? { title: s.title, notes: s.notes.length } : null;
+  });
+  check(
+    'following a share link opens that score',
+    received?.notes === model.notes,
+    `${received?.title} · ${received?.notes} notes`,
+  );
+  await recipient.close();
+}
+
+// --- command palette -------------------------------------------------------
+await page.keyboard.press('Control+k');
+await page.waitForTimeout(400);
+const paletteOpen = await page.locator('[aria-label="Command palette"]').count();
+check('command palette opens', paletteOpen === 1);
+await page.keyboard.type('piano roll');
+await page.waitForTimeout(300);
+await page.keyboard.press('Enter');
+await page.waitForTimeout(600);
+check('palette runs a command', (await page.evaluate(() => window.__cn.getState().scoreMode)) === 'roll');
+await page.locator('button:has-text("Sheet")').first().click();
+
+// --- keyboard visualiser ---------------------------------------------------
+check('keyboard visualiser renders', (await page.locator('canvas').count()) >= 1);
+
+// --- achievements ----------------------------------------------------------
+await page.locator('nav button:has-text("Library")').click();
+await page.waitForTimeout(700);
+const badges = await page.evaluate(() => window.__cn.getState().unlocked.length);
+check('achievements unlock from real activity', badges > 0, `${badges} earned`);
 
 check('no console errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 

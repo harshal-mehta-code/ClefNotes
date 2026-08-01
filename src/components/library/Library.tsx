@@ -4,6 +4,8 @@ import { SHELF } from '../../data/scores/shelf';
 import { exportLibrary, importLibrary, type StoredScore } from '../../lib/db/db';
 import { generatePhrase, generateWarmup, GRADES, seedFromDate } from '../../lib/score/generate';
 import { Empty, Label } from '../ui/primitives';
+import ProgressPanel from './ProgressPanel';
+import { SetlistBar, SetlistPicker } from './Setlists';
 
 function fmtDate(ts: number) {
   const d = new Date(ts);
@@ -29,11 +31,11 @@ export default function Library() {
   const loadScore = useApp((s) => s.loadScore);
   const deleteScore = useApp((s) => s.deleteScore);
   const setView = useApp((s) => s.setView);
-  const streak = useApp((s) => s.streak);
   const refreshStats = useApp((s) => s.refreshStats);
 
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const [setlist, setSetlist] = useState<string | null>(null);
 
   useEffect(() => {
     void refreshLibrary();
@@ -42,11 +44,12 @@ export default function Library() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return library;
-    return library.filter(
-      (s) => s.title.toLowerCase().includes(q) || s.composer.toLowerCase().includes(q),
-    );
-  }, [library, query]);
+    return library.filter((s) => {
+      if (setlist && !(s.tags ?? []).includes(setlist)) return false;
+      if (!q) return true;
+      return s.title.toLowerCase().includes(q) || s.composer.toLowerCase().includes(q);
+    });
+  }, [library, query, setlist]);
 
   const open = async (row: StoredScore) => {
     setBusy(row.id);
@@ -112,43 +115,9 @@ export default function Library() {
         </div>
       </header>
 
-      {streak && (
-        <div className="mb-7 flex flex-wrap items-center gap-5 border-[1.5px] border-ink bg-panel px-4 py-3">
-          <div>
-            <Label>Streak</Label>
-            <div className="num text-[22px] font-bold leading-tight">
-              {streak.current} <span className="lbl">days</span>
-            </div>
-          </div>
-          <div>
-            <Label>Today</Label>
-            <div className="num text-[22px] font-bold leading-tight">
-              {Math.round(streak.todaySeconds / 60)} <span className="lbl">min</span>
-            </div>
-          </div>
-          <div>
-            <Label>XP</Label>
-            <div className="num text-[22px] font-bold leading-tight">{streak.xp}</div>
-          </div>
-          <div className="ml-auto flex gap-[3px]">
-            {streak.days.map((d) => (
-              <span
-                key={d.date}
-                title={`${d.date} · ${Math.round(d.seconds / 60)} min`}
-                className="h-4 w-2.5"
-                style={{
-                  background:
-                    d.seconds >= 600
-                      ? 'rgb(var(--gold))'
-                      : d.seconds >= 60
-                        ? 'rgb(var(--mint))'
-                        : 'rgb(var(--sunk))',
-                }}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+      <ProgressPanel />
+
+      <SetlistBar library={library} active={setlist} onChange={setSetlist} />
 
       <section className="mb-7">
         <Label className="mb-2">Every day</Label>
@@ -192,6 +161,7 @@ export default function Library() {
                   >
                     {busy === row.id ? 'Opening…' : 'Open'}
                   </button>
+                  <SetlistPicker score={row} library={library} onChanged={() => void refreshLibrary()} />
                   <button
                     className="btn btn-ghost"
                     title="Remove from library"

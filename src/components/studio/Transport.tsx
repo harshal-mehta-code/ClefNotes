@@ -53,6 +53,8 @@ export default function Transport() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      // While the note editor is open the arrows and escape belong to it.
+      if (useApp.getState().editing && e.key !== ' ') return;
       if (e.key === ' ') {
         e.preventDefault();
         if (stepMode) void stepBy(1);

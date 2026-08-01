@@ -68,18 +68,36 @@ it assumes treble/bass by staff position, C major and 4/4.
 ## What's in it
 
 **Studio** — engraved score with note-level highlighting, piano roll, or both
-split. Per-part instrument, volume, pan and octave. Solo, mute, and
+split, over a **piano keyboard that lights up** in each part's colour as it
+plays. Per-part instrument, volume, pan and octave. Solo, mute, and
 **minus-one** (mute your part, the ensemble plays around you). Ten one-click
 sound packs — choir, orchestra, chapel organ, jazz combo, lo-fi, 8-bit, music
 box, baroque. Tempo 28–220 BPM plus a 25–200% speed multiplier, both without
 touching pitch. Loop any bar range by dragging across the score. Step mode to
 walk note by note. Metronome, count-in, transpose, swing, humanise, reverb.
 
+**Fix notes** — click any note and correct it: arrows move it by a semitone,
+shift-arrows by an octave, delete replaces it with a rest of the same length,
+and lyrics can be retyped. Every edit is heard immediately and is undoable.
+This is what makes a recognised PDF into a score you can rely on. Editing turns
+itself off on scores where notes can't be lined up one-for-one, rather than
+risk changing the wrong one.
+
+**Share** — one button packs the score, the mix and the loop into a link.
+A whole SATB movement comes to about 3 KB of URL. It travels in the fragment,
+so it is never sent to a server: a section leader can set the altos loud with
+bars 41–56 looping and send that exact state to eleven people.
+
 **Practice Lab** — a trouble map where bars redden as you keep going back to
 them, and one tap builds a drill from just those bars. A tempo ramp where each
 clean pass unlocks +5%. Live pitch scoring from the microphone via YIN
-autocorrelation, with a tuning meter in cents. Streaks, XP and per-score
-mastery.
+autocorrelation, with a tuning meter in cents. **Ear training** whose questions
+are drawn from the piece you have open, so getting better at intervals is the
+same work as learning the music. Streaks, XP and per-score mastery.
+
+**Progress** — a daily goal ring, twelve levels from Beginner to Maestro, and
+eighteen achievements that reward practice *habits* rather than time served:
+slowing a passage down, isolating your line, going back to fix a wrong note.
 
 **ClefVox** — a formant singing synthesiser. Lyric syllables are mapped to IPA
 vowels, each vowel sets three formant frequencies, and a glottal pulse train at
@@ -90,17 +108,24 @@ words at full volume while the others stay underneath. It sounds synthetic on
 purpose; a rehearsal track should sound like a guide, not a performance.
 
 **Library** — local, offline, no account. A shelf of public-domain scores ships
-with the app. A daily sight-reading phrase is generated fresh at your grade,
-the same for everyone on a given date. Export the whole library as one JSON
-file; that is the sync story. Export any score as WAV (rendered offline,
-exactly what you hear), MIDI, or MusicXML.
+with the app. Setlists group scores for a concert or a lesson. A daily
+sight-reading phrase is generated fresh at your grade, the same for everyone on
+a given date. Export the whole library as one JSON file; that is the sync
+story. Export any score as WAV (rendered offline, exactly what you hear), MIDI,
+or MusicXML.
 
-Light and dark themes, keyboard shortcuts throughout, installable as a PWA.
+Light and dark themes, a **⌘K command palette** that reaches every control,
+keyboard shortcuts throughout, and installable as a PWA. On a phone the mixer
+becomes a bottom sheet rather than disappearing — per-part control is the point
+of the app.
 
 ### Keyboard
 
-`space` play/pause (or advance, in step mode) · `←` `→` step · `esc` stop ·
-`l` loop · `m` metronome · `[` `]` tempo ∓4
+`⌘K` / `?` command palette · `space` play/pause (or advance, in step mode) ·
+`←` `→` step · `esc` stop · `l` loop · `m` metronome · `[` `]` tempo ∓4
+
+While **Fix notes** is on: `↑` `↓` semitone · `shift ↑` `↓` octave ·
+`←` `→` next/previous note · `delete` to rest · `⌘Z` undo
 
 ---
 
@@ -111,18 +136,22 @@ npm install
 npm run dev          # development
 npm run build        # production build into dist/
 npm run preview      # serve the build
-npm run smoke        # end-to-end browser checks against the preview
+npm run smoke        # 19 end-to-end browser checks against the preview
 ```
 
-`dist/` is a static bundle — put it on any static host. For a project-scoped
-path such as GitHub Pages, set the base:
+### Deploying
+
+`dist/` is a static bundle with no backend, so it goes on any static host.
+`vercel.json` is included and Vercel needs no configuration beyond connecting
+the repository — it sets SPA rewrites, immutable caching for the hashed assets
+(which is what makes the 7.5 MB Verovio chunk a one-time download), and
+always-revalidate for the shell and the service worker.
+
+For a project-scoped path such as GitHub Pages, set the base:
 
 ```bash
 BASE=/ClefNotes/ npm run build
 ```
-
-The Verovio WASM is ~7.5 MB and loads lazily on first score, then is cached by
-the service worker.
 
 ---
 
@@ -145,11 +174,13 @@ the service worker.
 src/
   lib/
     verovio/engraver.ts   Engraving + the playback model, from one pass
-    score/                Score DSL → MusicXML, MIDI import, phrase generator
+    score/                Score DSL → MusicXML, MIDI import, editing, generator
     audio/                Transport, instruments, ClefVox, pitch, WAV render
     import/               File sniffing, PDF tiers, the OMR pipeline
+    progress/             Achievements, levels, daily goal
+    share/                Compressed score-in-a-URL
     db/                   Dexie schema, practice stats, streaks
-  components/             studio · lab · vox · library
+  components/             studio · lab · vox · library · ui
   data/scores/            The bundled shelf
 ```
 
@@ -182,3 +213,8 @@ All public domain. The harmonisations are original to this project.
   you to download the file instead.
 - ClefVox maps English spelling to vowels by rule, not by dictionary. An
   odd-sounding word means a vowel guessed wrong — never a wrong note.
+- The note editor changes pitches, rests and lyrics but not rhythm; altering a
+  duration would need the rest of the bar rewritten to stay valid.
+- Share links carry the score itself, so a very large orchestral work will
+  exceed what a URL can hold. The app says so and points at MusicXML export
+  rather than producing a link that silently truncates.

@@ -278,6 +278,9 @@ export async function engrave(musicXml: string, opts: EngraveOptions = DEFAULT_E
   // Notes, in timemap order.
   const notes: PlayNote[] = [];
   const seen = new Set<string>();
+  // Counts notes per part as they are encountered, which is document order —
+  // the same order the <note> elements appear in the MusicXML.
+  const ordinalCounter = new Map<number, number>();
   let totalQ = 0;
 
   for (const entry of timemap) {
@@ -315,12 +318,16 @@ export async function engrave(musicXml: string, opts: EngraveOptions = DEFAULT_E
       }
 
       const syl = sylOfNote.get(id);
+      const part = staffNo - 1;
+      const ordinal = ordinalCounter.get(part) ?? 0;
+      ordinalCounter.set(part, ordinal + 1);
       notes.push({
         id,
         midi,
         q: entry.qstamp,
         qDur,
-        part: staffNo - 1,
+        part,
+        ordinal,
         measure,
         syllable: syl?.text,
         syllableContinues: syl?.continues,

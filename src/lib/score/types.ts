@@ -25,6 +25,13 @@ export interface PlayNote {
   qDur: number;
   /** Index into Score.parts. */
   part: number;
+  /**
+   * Position of this note among its part's sounding notes, in document order.
+   * Verovio regenerates element ids whenever the score is re-engraved, so this
+   * — not `id` — is what the editor uses to hold a selection across an edit,
+   * and to line a note up with its `<note>` element in the MusicXML.
+   */
+  ordinal: number;
   /** 1-based measure number this note starts in. */
   measure: number;
   /** Lyric syllable attached to this note, if any. */

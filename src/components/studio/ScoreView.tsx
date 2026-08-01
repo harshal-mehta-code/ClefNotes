@@ -20,6 +20,9 @@ export default function ScoreView() {
   const loopBars = useApp((s) => s.loopBars);
   const seekQ = useApp((s) => s.seekQ);
   const setLoopBars = useApp((s) => s.setLoopBars);
+  const editing = useApp((s) => s.editing);
+  const selected = useApp((s) => s.selected);
+  const selectNote = useApp((s) => s.selectNote);
 
   const hostRef = useRef<HTMLDivElement>(null);
   const cursorRef = useRef<HTMLDivElement>(null);
@@ -121,6 +124,19 @@ export default function ScoreView() {
     }
   }, [loopBars, svg]);
 
+  // --- the note being edited ----------------------------------------------
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    for (const el of Array.from(host.querySelectorAll('.cn-selected'))) el.classList.remove('cn-selected');
+    if (!editing || !selected || !score) return;
+    const note = score.notes.find((n) => n.part === selected.part && n.ordinal === selected.ordinal);
+    if (!note) return;
+    const el = host.querySelector(`#${CSS.escape(note.id)}`);
+    el?.classList.add('cn-selected');
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [editing, selected, score, svg]);
+
   // --- the frame loop ------------------------------------------------------
   useEffect(() => {
     if (!score) return;
@@ -214,11 +230,14 @@ export default function ScoreView() {
     if (noteEl) {
       const note = byId.get(noteEl.id);
       if (note) {
+        if (editing) selectNote({ part: note.part, ordinal: note.ordinal });
         seekQ(note.q);
         void engine.preview(note.midi, note.part, 0.5, note.syllable);
       }
     }
-    dragFrom.current = measureAt(e.target);
+    // Dragging across bars sets a loop, but not while editing — there the
+    // pointer belongs to picking notes.
+    dragFrom.current = editing ? null : measureAt(e.target);
   };
 
   const onPointerUp = (e: React.PointerEvent) => {
@@ -236,7 +255,7 @@ export default function ScoreView() {
     <div className="relative h-full overflow-auto bg-panel">
       <div
         ref={hostRef}
-        className="score-host relative p-4"
+        className={`score-host relative p-4 ${editing ? 'cn-editing' : ''}`}
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
       />
