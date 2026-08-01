@@ -34,6 +34,12 @@ interface AppState {
   view: ViewId;
   scoreMode: ScoreViewMode;
   theme: 'light' | 'dark' | 'system';
+  /**
+   * Simple mode shows only the controls a first-timer needs. Everything else
+   * is one tap away — the app has a lot in it, and meeting someone with all of
+   * it at once is how you lose them before they hear a note.
+   */
+  simpleMode: boolean;
 
   score: Score | null;
   svg: string;
@@ -79,6 +85,7 @@ interface AppState {
   setView: (v: ViewId) => void;
   setScoreMode: (m: ScoreViewMode) => void;
   setTheme: (t: 'light' | 'dark' | 'system') => void;
+  setSimpleMode: (on: boolean) => void;
 
   loadScore: (musicXml: string, meta: { source: string; slug?: string; id?: string }) => Promise<void>;
   reEngrave: (opts: Partial<EngraveOptions>) => Promise<void>;
@@ -142,6 +149,7 @@ export const useApp = create<AppState>((set, get) => ({
   view: 'library',
   scoreMode: 'sheet',
   theme: 'system',
+  simpleMode: true,
 
   score: null,
   svg: '',
@@ -177,6 +185,10 @@ export const useApp = create<AppState>((set, get) => ({
 
   setView: (view) => set({ view }),
   setScoreMode: (scoreMode) => set({ scoreMode }),
+  setSimpleMode: (on) => {
+    set({ simpleMode: on });
+    void setSetting('simpleMode', on);
+  },
   setTheme: (theme) => {
     set({ theme });
     const root = document.documentElement;
@@ -675,9 +687,10 @@ export const useApp = create<AppState>((set, get) => ({
   },
 }));
 
-// Handy for debugging in the console: `__cn.getState().score`.
+// Handy for debugging in the console: `__cn.getState().score`, `__engine.outputLevel()`.
 if (typeof window !== 'undefined') {
   (window as unknown as { __cn: typeof useApp }).__cn = useApp;
+  (window as unknown as { __engine: typeof engine }).__engine = engine;
 }
 
 /** Track which bars have actually sounded, for the trouble map. */
@@ -705,14 +718,16 @@ engine.onEnded(() => {
 
 /** Restore saved preferences and progress. */
 void (async () => {
-  const [theme, progress, unlocked, goal] = await Promise.all([
+  const [theme, progress, unlocked, goal, simple] = await Promise.all([
     getSetting<'light' | 'dark' | 'system'>('theme', 'system'),
     getSetting<ProgressCounters>('progress', EMPTY_PROGRESS),
     getSetting<string[]>('unlocked', []),
     getSetting<number>('dailyGoalMin', DEFAULT_DAILY_GOAL_MIN),
+    getSetting<boolean>('simpleMode', true),
   ]);
   useApp.getState().setTheme(theme);
   useApp.setState({
+    simpleMode: simple,
     // Merge rather than replace: an older saved shape must not drop new counters.
     progress: { ...EMPTY_PROGRESS, ...progress },
     unlocked,

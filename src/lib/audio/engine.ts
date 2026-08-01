@@ -93,6 +93,7 @@ export class AudioEngine {
   private wet!: GainNode;
   private convolver!: ConvolverNode;
   private partNodes: Array<{ gain: GainNode; pan: StereoPannerNode }> = [];
+  private meter: AnalyserNode | null = null;
 
   private score: Score | null = null;
   private mixes: PartMix[] = [];
@@ -116,9 +117,28 @@ export class AudioEngine {
   /** Must be called from a user gesture; browsers won't start audio otherwise. */
   async ensureContext(): Promise<AudioContext> {
     if (!this.ctx) {
-      const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const Ctor =
+        window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctor({ latencyHint: 'interactive' });
+
+      // On iOS, Web Audio obeys the hardware mute switch unless the session is
+      // declared as playback — which is how an app ends up completely silent on
+      // a phone that is working perfectly.
+      const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+      if (session) {
+        try {
+          session.type = 'playback';
+        } catch {
+          /* older Safari: nothing to do */
+        }
+      }
+
       this.buildGraph();
+      // A score is almost always loaded before the first user gesture, so the
+      // per-part nodes could not be built then. Build them now that there is a
+      // context, or every note would be scheduled to a destination that doesn't
+      // exist and the app would play in total silence.
+      this.rebuildPartNodes();
     }
     if (this.ctx.state === 'suspended') await this.ctx.resume();
     return this.ctx;
@@ -143,6 +163,34 @@ export class AudioEngine {
 
   get audioContext(): AudioContext | null {
     return this.ctx;
+  }
+
+  /**
+   * An analyser tapped off the master bus.
+   *
+   * Drives the output meter in the transport — and makes silence something you
+   * can see rather than something you have to debug. The smoke test reads it to
+   * prove the app is actually making sound.
+   */
+  createMeter(): AnalyserNode | null {
+    if (!this.ctx) return null;
+    if (!this.meter) {
+      this.meter = this.ctx.createAnalyser();
+      this.meter.fftSize = 512;
+      this.master.connect(this.meter);
+    }
+    return this.meter;
+  }
+
+  /** Peak level on the master bus, 0–1. */
+  outputLevel(): number {
+    const meter = this.meter;
+    if (!meter) return 0;
+    const buf = new Float32Array(meter.fftSize);
+    meter.getFloatTimeDomainData(buf);
+    let peak = 0;
+    for (const v of buf) peak = Math.max(peak, Math.abs(v));
+    return peak;
   }
 
   subscribe(fn: EngineListener): () => void {

@@ -125,6 +125,11 @@ a given date. Export the whole library as one JSON file; that is the sync
 story. Export any score as WAV (rendered offline, exactly what you hear), MIDI,
 or MusicXML.
 
+**Simple by default.** The Studio opens with four controls — play, stop,
+tempo, parts — and everything else is behind one tap on **More**. The app has a
+lot in it, and meeting someone with all of it at once is how you lose them
+before they hear a note. The choice is remembered.
+
 Light and dark themes, a **⌘K command palette** that reaches every control,
 keyboard shortcuts throughout, and installable as a PWA. On a phone the mixer
 becomes a bottom sheet rather than disappearing — per-part control is the point
@@ -147,7 +152,7 @@ npm install
 npm run dev          # development
 npm run build        # production build into dist/
 npm run preview      # serve the build
-npm run smoke        # 23 end-to-end browser checks against the preview
+npm run smoke        # 26 end-to-end browser checks against the preview
 ```
 
 ### Deploying

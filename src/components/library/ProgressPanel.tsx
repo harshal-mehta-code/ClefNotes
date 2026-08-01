@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useApp } from '../../state/store';
 import { heatOf } from '../../lib/db/db';
 import { evaluate, levelFor } from '../../lib/progress/achievements';
@@ -43,6 +43,7 @@ export default function ProgressPanel() {
   const bars = useApp((s) => s.bars);
   const goal = useApp((s) => s.dailyGoalMin);
   const setGoal = useApp((s) => s.setDailyGoal);
+  const [showAll, setShowAll] = useState(false);
 
   const cleanBars = useMemo(
     () => Array.from(bars.values()).filter((b) => heatOf(b) === 'clean').length,
@@ -137,12 +138,20 @@ export default function ProgressPanel() {
         </div>
       )}
 
+      {/* Eighteen badges is a wall on a first visit, so by default only the
+          earned ones and the next few within reach are shown. */}
       <div className="border-t border-rule px-4 py-3">
-        <Label className="mb-2">Achievements</Label>
+        <div className="mb-2 flex items-center gap-2">
+          <Label>Achievements</Label>
+          <button className="lbl underline decoration-riso-pink" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? 'show fewer' : `show all ${results.length}`}
+          </button>
+        </div>
         <div className="grid grid-cols-[repeat(auto-fill,minmax(158px,1fr))] gap-2">
           {results
             .slice()
             .sort((a, b) => Number(b.unlocked) - Number(a.unlocked) || b.progress - a.progress)
+            .slice(0, showAll ? results.length : Math.max(4, earned + 3))
             .map(({ achievement, progress: value, unlocked }) => (
               <div
                 key={achievement.id}

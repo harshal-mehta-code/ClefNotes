@@ -12,12 +12,10 @@
   ],
   "headers": [
     {
-      "comment": "Build assets are content-hashed, so they can be cached forever. This is what makes the 7.5 MB Verovio chunk a one-time cost.",
       "source": "/assets/(.*)",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
     },
     {
-      "comment": "The shell and the worker must never be stale, or a deploy can't take effect.",
       "source": "/sw.js",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" },
@@ -36,7 +34,6 @@
       ]
     },
     {
-      "comment": "Everything runs client-side and nothing is uploaded, so the policy can be strict. The microphone is needed for practice scoring.",
       "source": "/(.*)",
       "headers": [
         { "key": "X-Content-Type-Options", "value": "nosniff" },

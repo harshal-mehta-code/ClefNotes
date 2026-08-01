@@ -21,12 +21,14 @@ export default function Toasts() {
   if (!toasts.length) return null;
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-[400] flex flex-col gap-2">
+    // Sits clear of the transport on a phone, where it would otherwise cover
+    // the play button — the one control nobody should have to hunt for.
+    <div className="pointer-events-none fixed bottom-32 right-3 z-[400] flex flex-col gap-2 sm:bottom-4 sm:right-4">
       {toasts.map((t) => (
         <button
           key={t.id}
           onClick={() => dismiss(t.id)}
-          className="pointer-events-auto w-[280px] border-[1.5px] border-ink bg-panel p-3 text-left shadow-stamp"
+          className="pointer-events-auto w-[min(280px,calc(100vw-1.5rem))] border-[1.5px] border-ink bg-panel p-3 text-left shadow-stamp"
           style={{ animation: 'cn-toast-in 240ms ease-out' }}
         >
           <div className="flex items-center gap-2">

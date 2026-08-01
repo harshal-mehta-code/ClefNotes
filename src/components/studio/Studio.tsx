@@ -24,6 +24,8 @@ export default function Studio() {
   const setLoopBars = useApp((s) => s.setLoopBars);
   const editing = useApp((s) => s.editing);
   const setEditing = useApp((s) => s.setEditing);
+  const simpleMode = useApp((s) => s.simpleMode);
+  const setSimpleMode = useApp((s) => s.setSimpleMode);
   // The mixer is a permanent column on a desktop and an on-demand sheet on a
   // phone, so it starts closed only where it would cover the music.
   const [showMixer, setShowMixer] = useState(() =>
@@ -83,55 +85,78 @@ export default function Studio() {
           </div>
         </div>
 
+        {/* Simple mode carries the four things a first-timer needs. Everything
+            else is one tap away rather than in their face on arrival. */}
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          <Chip on={mode === 'sheet'} onClick={() => setMode('sheet')}>
-            Sheet
-          </Chip>
-          <Chip on={mode === 'roll'} onClick={() => setMode('roll')}>
-            Piano roll
-          </Chip>
-          <Chip on={mode === 'split'} onClick={() => setMode('split')}>
-            Split
-          </Chip>
-          <span className="mx-1 h-5 w-px bg-rule2" />
-          <Chip
-            onClick={() => reEngrave({ scale: Math.max(24, engraveOpts.scale - 5) })}
-            title="Smaller engraving"
-          >
-            −
-          </Chip>
-          <Chip
-            onClick={() => reEngrave({ scale: Math.min(80, engraveOpts.scale + 5) })}
-            title="Larger engraving"
-          >
-            +
-          </Chip>
-          {loopBars && (
-            <Chip on onClick={() => setLoopBars(null)} title="Clear the loop">
-              Loop {loopBars[0]}–{loopBars[1]} ✕
-            </Chip>
+          {simpleMode ? (
+            <>
+              {loopBars && (
+                <Chip on onClick={() => setLoopBars(null)} title="Clear the loop">
+                  Loop {loopBars[0]}–{loopBars[1]} ✕
+                </Chip>
+              )}
+              <Chip on={showMixer} onClick={() => setShowMixer((v) => !v)} title="Volume and instrument per part">
+                Parts
+              </Chip>
+              <Chip onClick={() => setSimpleMode(false)} title="Show every control">
+                More ⋯
+              </Chip>
+            </>
+          ) : (
+            <>
+              <Chip on={mode === 'sheet'} onClick={() => setMode('sheet')}>
+                Sheet
+              </Chip>
+              <Chip on={mode === 'roll'} onClick={() => setMode('roll')}>
+                Piano roll
+              </Chip>
+              <Chip on={mode === 'split'} onClick={() => setMode('split')}>
+                Split
+              </Chip>
+              <span className="mx-1 h-5 w-px bg-rule2" />
+              <Chip
+                onClick={() => reEngrave({ scale: Math.max(24, engraveOpts.scale - 5) })}
+                title="Smaller engraving"
+              >
+                −
+              </Chip>
+              <Chip
+                onClick={() => reEngrave({ scale: Math.min(80, engraveOpts.scale + 5) })}
+                title="Larger engraving"
+              >
+                +
+              </Chip>
+              {loopBars && (
+                <Chip on onClick={() => setLoopBars(null)} title="Clear the loop">
+                  Loop {loopBars[0]}–{loopBars[1]} ✕
+                </Chip>
+              )}
+              <Chip on={showKeys} onClick={() => setShowKeys((v) => !v)} title="Piano keyboard">
+                Keys
+              </Chip>
+              <Chip
+                onClick={() => void togglePerformance()}
+                title="Fill the screen with the music — for a music stand"
+              >
+                Perform
+              </Chip>
+              <Chip
+                on={editing}
+                onClick={() => setEditing(!editing)}
+                title="Correct wrong notes — essential after a PDF import"
+              >
+                Fix notes
+              </Chip>
+              <Chip on={showMixer} onClick={() => setShowMixer((v) => !v)}>
+                Mixer
+              </Chip>
+              <ShareButton />
+              <ExportMenu />
+              <Chip onClick={() => setSimpleMode(true)} title="Hide the advanced controls">
+                Simple
+              </Chip>
+            </>
           )}
-          <Chip on={showKeys} onClick={() => setShowKeys((v) => !v)} title="Piano keyboard">
-            Keys
-          </Chip>
-          <Chip
-            onClick={() => void togglePerformance()}
-            title="Fill the screen with the music — for a music stand"
-          >
-            Perform
-          </Chip>
-          <Chip
-            on={editing}
-            onClick={() => setEditing(!editing)}
-            title="Correct wrong notes — essential after a PDF import"
-          >
-            Fix notes
-          </Chip>
-          <Chip on={showMixer} onClick={() => setShowMixer((v) => !v)}>
-            Mixer
-          </Chip>
-          <ShareButton />
-          <ExportMenu />
         </div>
       </header>
 

@@ -82,6 +82,24 @@ const b = await page.evaluate(() => window.__cn.getState().q);
 check('transport advances', b > a.q, `${a.q.toFixed(2)} → ${b.toFixed(2)}`);
 check('sounding notes are highlighted', a.lit > 0, `${a.lit} lit`);
 
+// The live audio graph actually produces signal.
+// This is deliberately measured off the master bus during real playback: the
+// offline WAV renderer is a separate code path, and passing there once hid a
+// bug that left live playback completely silent.
+const audio = await page.evaluate(async () => {
+  const eng = window.__engine;
+  if (!eng || !eng.audioContext) return { ok: false, why: 'no audio context' };
+  eng.createMeter();
+  let peak = 0;
+  const started = performance.now();
+  while (performance.now() - started < 1800) {
+    peak = Math.max(peak, eng.outputLevel());
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return { ok: peak > 0.005, peak, state: eng.audioContext.state };
+});
+check('live playback produces audible signal', audio.ok, `peak ${audio.peak?.toFixed(4)} · ctx ${audio.state}`);
+
 await page.locator('aside button[title="Mute this part"]').first().click();
 await page.waitForTimeout(400);
 check('muting a part fades its staves', (await page.locator('.score-host g.staff.cn-muted').count()) > 0);
@@ -96,6 +114,16 @@ const loop = await page.evaluate(() => {
   return { on: s.transport.loop, a: s.transport.loopStartQ, b: s.transport.loopEndQ };
 });
 check('loop range maps bars to quarter notes', loop.on && loop.a === 4 && loop.b === 16, JSON.stringify(loop));
+
+// --- simple mode is the default, and reveals everything on request --------
+check(
+  'simple mode hides the advanced controls by default',
+  (await page.locator('button:has-text("Fix notes")').count()) === 0 &&
+    (await page.locator('button:has-text("Parts")').count()) === 1,
+);
+await page.locator('button:has-text("More")').click();
+await page.waitForTimeout(400);
+check('“More” reveals the full control set', (await page.locator('button:has-text("Fix notes")').count()) === 1);
 
 // --- the note editor -------------------------------------------------------
 await page.locator('button:has-text("Fix notes")').click();
