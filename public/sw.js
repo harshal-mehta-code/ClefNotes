@@ -6,7 +6,9 @@
  * live in IndexedDB, so they were never fetched over the network anyway.
  */
 
-const CACHE = 'clefnotes-v1';
+// Bumping this name is how a stale build gets swept: activate deletes every
+// cache that is not the current one.
+const CACHE = 'clefnotes-v2';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

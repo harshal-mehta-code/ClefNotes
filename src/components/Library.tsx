@@ -94,7 +94,7 @@ export default function Library() {
               <article key={s.id} className="flex flex-col border-[1.5px] border-ink bg-panel shadow-stamp">
                 <button className="block" onClick={() => void openScore(s.id)}>
                   <img
-                    src={s.pages[0]?.image}
+                    src={s.pages?.[0]?.image}
                     alt=""
                     className="h-32 w-full border-b border-rule2 bg-white object-cover object-top"
                   />
@@ -104,7 +104,8 @@ export default function Library() {
                     {s.title}
                   </h2>
                   <div className="lbl mb-2.5">
-                    {s.pages.length} page{s.pages.length === 1 ? '' : 's'} · {s.notes.length} notes
+                    {s.pages?.length ?? 0} page{s.pages?.length === 1 ? '' : 's'} ·{' '}
+                    {s.notes?.length ?? 0} notes
                   </div>
                   <div className="mt-auto flex gap-1.5">
                     <button className="btn btn-primary flex-1" onClick={() => void openScore(s.id)}>

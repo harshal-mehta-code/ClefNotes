@@ -43,6 +43,42 @@ await page.goto(BASE, { waitUntil: 'networkidle' });
 await page.waitForTimeout(600);
 check('the app loads to the drop zone', (await page.locator('text=Drop a PDF here').count()) === 1);
 
+// A device that used an earlier ClefNotes still holds scores in the shape that
+// version saved. Reading a page count off one of those took the whole app down
+// to a white screen, which no static site can diagnose after the fact.
+await page.evaluate(
+  () =>
+    new Promise((done) => {
+      const req = indexedDB.open('clefnotes');
+      req.onsuccess = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('scores')) return done();
+        const tx = db.transaction('scores', 'readwrite');
+        tx.objectStore('scores').put({
+          id: 'legacy-shape',
+          title: 'Saved by an older version',
+          addedAt: Date.now(),
+          openedAt: Date.now(),
+          musicxml: '<score-partwise/>',
+        });
+        tx.oncomplete = () => {
+          db.close();
+          done();
+        };
+        tx.onerror = () => done();
+      };
+      req.onerror = () => done();
+    }),
+);
+await page.reload({ waitUntil: 'networkidle' });
+await page.waitForTimeout(900);
+check(
+  'a score from an older version does not blank the app',
+  (await page.locator('text=Drop a PDF here').count()) === 1 &&
+    (await page.locator('text=ClefNotes stopped').count()) === 0,
+);
+errors.length = 0;
+
 await page.locator('input[type=file]').first().setInputFiles(PDF);
 
 let info = null;

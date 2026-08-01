@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import Dexie, { type Table } from 'dexie';
 import { player } from '../lib/audio/player';
-import type { InstrumentId } from '../lib/audio/instruments';
+import { INSTRUMENTS, type InstrumentId } from '../lib/audio/instruments';
 import { importPdf } from '../lib/detect/pdf';
 import { noteMidi, type ClefId, type DetectedNote, type PageScore } from '../lib/detect/types';
 
@@ -84,6 +84,10 @@ const persist = (score: PageScore | null) => {
   if (score) void db.scores.put(score);
 };
 
+/** Whether a stored row is a score this version of the app can actually open. */
+const readable = (s: PageScore | undefined): s is PageScore =>
+  s != null && Array.isArray(s.pages) && Array.isArray(s.staves) && Array.isArray(s.notes);
+
 export const useApp = create<AppState>((set, get) => ({
   view: 'library',
   theme: 'system',
@@ -141,8 +145,13 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   openScore: async (id) => {
-    const score = await db.scores.get(id);
-    if (!score) return;
+    const score = await db.scores.get(id).catch(() => undefined);
+    if (!readable(score)) {
+      await db.scores.delete(id).catch(() => undefined);
+      await get().refreshLibrary();
+      set({ error: 'That score was saved by an older version of ClefNotes. Import the PDF again.' });
+      return;
+    }
     const opened = { ...score, openedAt: Date.now() };
     await db.scores.put(opened);
     set({ score: opened, view: 'sheet', selected: null, error: null });
@@ -157,7 +166,15 @@ export const useApp = create<AppState>((set, get) => ({
 
   refreshLibrary: async () => {
     const rows = await db.scores.orderBy('openedAt').reverse().toArray().catch(() => []);
-    set({ library: rows });
+    const usable = rows.filter(readable);
+    // Scores saved by an earlier version of ClefNotes describe a rebuilt score
+    // rather than a page you can click, and there is nothing in them to convert
+    // — the page images they would need were never stored. Left in place they
+    // are worse than useless: the shelf reads their page count and takes the
+    // whole app down with it. So they are dropped, and the PDF re-imported.
+    const stale = rows.filter((r) => !readable(r));
+    if (stale.length) await db.scores.bulkDelete(stale.map((r) => r.id)).catch(() => undefined);
+    set({ library: usable });
   },
 
   closeScore: () => set({ score: null, view: 'library', selected: null }),
@@ -272,8 +289,11 @@ void (async () => {
     const get = (k: string) => rows.find((r) => r.key === k)?.value;
     const theme = (get('theme') as 'light' | 'dark' | 'system') ?? 'system';
     useApp.getState().setTheme(theme);
+    // Only honour a remembered instrument that still exists — an older version
+    // had a singing voice, and restoring a preset that is no longer there would
+    // leave the app silent with no way to tell why.
     const instrument = get('instrument') as InstrumentId | undefined;
-    if (instrument) useApp.getState().setInstrument(instrument);
+    if (instrument && INSTRUMENTS[instrument]) useApp.getState().setInstrument(instrument);
     const volume = get('volume') as number | undefined;
     if (typeof volume === 'number') useApp.getState().setVolume(volume);
   } catch {
