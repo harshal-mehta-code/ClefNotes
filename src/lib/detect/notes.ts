@@ -109,14 +109,38 @@ export function findStaves(bm: Bitmap): RawStaff[] {
     const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
     const even = gaps.every((g) => Math.abs(g - mean) <= Math.max(1.6, mean * 0.34));
     if (even && mean >= 3 && mean <= 40) {
+      // Where the staff itself begins and ends: the longest unbroken run of ink
+      // along its middle line. Taking the leftmost ink on that row instead picks
+      // up whatever is printed beside the staff — a part name like "Melody" sits
+      // exactly there — and then everything measured from the left edge starts
+      // in the wrong place, including the point where reading notes begins,
+      // which is how a treble clef came to be read as a notehead.
       const midY = Math.round(group[2]);
-      let left = w;
-      let right = 0;
+      const bridge = Math.max(2, Math.round(mean * 0.5));
+      let left = -1;
+      let right = -1;
+      let runFrom = -1;
+      let blank = 0;
       for (let x = 0; x < w; x++) {
         if (data[midY * w + x]) {
-          if (x < left) left = x;
-          right = x;
+          if (runFrom < 0) runFrom = x;
+          blank = 0;
+        } else if (runFrom >= 0 && ++blank > bridge) {
+          const end = x - blank;
+          if (end - runFrom > right - left) {
+            left = runFrom;
+            right = end;
+          }
+          runFrom = -1;
         }
+      }
+      if (runFrom >= 0 && w - 1 - runFrom > right - left) {
+        left = runFrom;
+        right = w - 1;
+      }
+      if (left < 0) {
+        i += 1;
+        continue;
       }
       staves.push({
         lines: group,
@@ -175,24 +199,58 @@ export function groupSystems(clean: Bitmap, staves: RawStaff[]): number[][] {
 
 // --- staff-line removal ----------------------------------------------------
 
+/**
+ * Erase the staff lines, leaving what was printed on them.
+ *
+ * The rule is that ink standing tall at a line belongs to something else and
+ * has to survive. How tall counts as tall is the whole problem, and guessing it
+ * from the staff spacing was wrong in a way that was invisible for a long time:
+ * at a generous threshold a *hollow* notehead is erased along with the line,
+ * because the rim of one is only a few pixels of ink where a filled head is a
+ * whole staff space of it. Half notes came out of this shredded into arcs —
+ * detectable as nothing at all — while every quarter note came through intact.
+ *
+ * So each line measures itself. Across most of its length a staff line has
+ * nothing on it but itself, which makes the median run height along it exactly
+ * the line's own thickness, whatever the resolution or the engraving. Anything
+ * thicker than that stays.
+ */
 export function removeStaffLines(bm: Bitmap, staves: RawStaff[]): Bitmap {
   const { w, h, data } = bm;
   const out = new Uint8Array(data);
-  const thickness = Math.max(1, Math.round(staves[0] ? staves[0].spacing / 4.5 : 2));
 
   for (const staff of staves) {
+    const reach = Math.max(4, Math.round(staff.spacing));
     for (const lineY of staff.lines) {
       const y0 = Math.round(lineY);
+      if (y0 < 0 || y0 >= h) continue;
+
+      const spans: Array<[number, number]> = [];
+      const heights: number[] = [];
       for (let x = staff.left; x <= staff.right; x++) {
-        // Erase only where the ink is thin. Where a stem or notehead crosses
-        // the line the run is tall, and that has to survive.
+        if (!data[y0 * w + x]) {
+          spans.push([0, -1]);
+          continue;
+        }
         let up = 0;
         let down = 0;
-        while (up < thickness * 4 && y0 - up - 1 >= 0 && data[(y0 - up - 1) * w + x]) up++;
-        while (down < thickness * 4 && y0 + down + 1 < h && data[(y0 + down + 1) * w + x]) down++;
-        if (up + down + 1 <= thickness * 2 + 1) {
-          for (let y = y0 - up; y <= y0 + down; y++) if (y >= 0 && y < h) out[y * w + x] = 0;
-        }
+        while (up < reach && y0 - up - 1 >= 0 && data[(y0 - up - 1) * w + x]) up++;
+        while (down < reach && y0 + down + 1 < h && data[(y0 + down + 1) * w + x]) down++;
+        spans.push([up, down]);
+        heights.push(up + down + 1);
+      }
+      if (!heights.length) continue;
+
+      heights.sort((a, b) => a - b);
+      const thickness = heights[heights.length >> 1];
+      // One pixel of slack for where the line thickens against something drawn
+      // on top of it. More than that starts eating noteheads again.
+      const limit = thickness + 1;
+
+      for (let x = staff.left; x <= staff.right; x++) {
+        const [up, down] = spans[x - staff.left];
+        if (down < 0 || up + down + 1 > limit) continue;
+        for (let y = y0 - up; y <= y0 + down; y++) if (y >= 0 && y < h) out[y * w + x] = 0;
       }
     }
   }
@@ -220,6 +278,42 @@ function ellipseInk(bm: Bitmap, cx: number, cy: number, rx: number, ry: number):
   return total ? hits / total : 0;
 }
 
+/**
+ * Ink fraction in an elliptical annulus, with the radii given as fractions of
+ * (rx, ry). This is how a hollow notehead is recognised: as a ring of ink with
+ * paper inside it, measured over an area. Four rays out from the middle would
+ * be cheaper, and that is what this used to do — but a ray meets the outline at
+ * one pixel, so a single-pixel break in it makes the whole head vanish, and at
+ * this size most heads have one somewhere.
+ */
+function annulusInk(
+  bm: Bitmap,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  from: number,
+  to: number,
+): number {
+  let hits = 0;
+  let total = 0;
+  const x0 = Math.max(0, Math.floor(cx - rx * to));
+  const x1 = Math.min(bm.w - 1, Math.ceil(cx + rx * to));
+  const y0 = Math.max(0, Math.floor(cy - ry * to));
+  const y1 = Math.min(bm.h - 1, Math.ceil(cy + ry * to));
+  for (let y = y0; y <= y1; y++) {
+    const dy = (y - cy) / ry;
+    for (let x = x0; x <= x1; x++) {
+      const dx = (x - cx) / rx;
+      const r2 = dx * dx + dy * dy;
+      if (r2 < from * from || r2 > to * to) continue;
+      total++;
+      hits += bm.data[y * bm.w + x];
+    }
+  }
+  return total ? hits / total : 0;
+}
+
 function run(bm: Bitmap, cx: number, cy: number, dx: number, dy: number, max: number): number {
   let n = 0;
   let x = cx;
@@ -233,34 +327,18 @@ function run(bm: Bitmap, cx: number, cy: number, dx: number, dy: number, max: nu
   return n;
 }
 
-function gapThenStroke(
-  bm: Bitmap,
-  cx: number,
-  cy: number,
-  dx: number,
-  dy: number,
-  maxGap: number,
-  maxStroke: number,
-): { gap: number; stroke: number } | null {
-  let gap = 0;
+/** How far the paper runs before ink, which is how far a hole reaches. */
+function gap(bm: Bitmap, cx: number, cy: number, dx: number, dy: number, max: number): number {
+  let n = 0;
   let x = cx;
   let y = cy;
-  while (gap < maxGap) {
+  while (n < max) {
     x += dx;
     y += dy;
-    if (x < 0 || y < 0 || x >= bm.w || y >= bm.h) return null;
-    if (bm.data[y * bm.w + x]) break;
-    gap++;
+    if (ink(bm, x, y)) break;
+    n++;
   }
-  if (gap >= maxGap) return null;
-  let stroke = 0;
-  while (stroke < maxStroke) {
-    x += dx;
-    y += dy;
-    if (!ink(bm, x, y)) break;
-    stroke++;
-  }
-  return { gap, stroke };
+  return n;
 }
 
 /**
@@ -284,7 +362,7 @@ export function findHeads(
   // Past the clef and the key signature. A fixed distance from the left edge is
   // not enough: where a bracket joins the staves it *is* the left edge, and the
   // clef then sits inside the margin and gets read as a pair of noteheads.
-  const xFrom = Math.round(Math.max(staff.left + sp * 3.2, startX));
+  const xFrom = Math.round(Math.max(staff.left + sp * 4.2, startX));
   const stride = Math.max(1, Math.round(sp / 7));
 
   const minW = sp * 0.8;
@@ -307,21 +385,22 @@ export function findHeads(
         continue;
       }
 
-      // Hollow head: a light centre ringed by a thin stroke on every side.
-      const left = gapThenStroke(clean, x, y, -1, 0, sp * 0.6, sp * 0.5);
-      const right = gapThenStroke(clean, x, y, 1, 0, sp * 0.6, sp * 0.5);
-      if (!left || !right || left.stroke < 1 || right.stroke < 1) continue;
-      const width = left.gap + left.stroke + right.gap + right.stroke;
-      if (width < minW || width > maxW) continue;
-      const up = gapThenStroke(clean, x, y, 0, -1, sp * 0.5, sp * 0.4);
-      const down = gapThenStroke(clean, x, y, 0, 1, sp * 0.5, sp * 0.4);
-      if (!up || !down) continue;
-      const height = up.gap + up.stroke + down.gap + down.stroke;
-      if (height < minH || height > maxH) continue;
-      if (ellipseInk(clean, x, y, rx * 0.4, ry * 0.4) > 0.22) continue;
-      const whole = ellipseInk(clean, x, y, rx, ry);
-      if (whole < 0.3 || whole > 0.78) continue;
-      candidates.push({ x, y, score: whole, filled: false });
+      // Hollow head: paper in the middle with a ring of ink around it, and
+      // nothing much beyond that ring — which is what separates a notehead from
+      // the gap between two beams or the counter of a letter.
+      const inner = ellipseInk(clean, x, y, rx * 0.45, ry * 0.45);
+      if (inner > 0.25) continue;
+      // The paper has to stop. Between two beams, or between two stems, it is
+      // ringed by ink in the same way but carries on out of the ring — and that
+      // gap is not a notehead, whatever the ring says.
+      if (gap(clean, x, y, -1, 0, rx * 1.5) >= rx * 1.5) continue;
+      if (gap(clean, x, y, 1, 0, rx * 1.5) >= rx * 1.5) continue;
+      if (gap(clean, x, y, 0, -1, ry * 1.7) >= ry * 1.7) continue;
+      if (gap(clean, x, y, 0, 1, ry * 1.7) >= ry * 1.7) continue;
+      const ring = annulusInk(clean, x, y, rx, ry, 0.6, 1.05);
+      if (ring < 0.6) continue;
+      if (annulusInk(clean, x, y, rx, ry, 1.4, 1.8) > 0.55) continue;
+      candidates.push({ x, y, score: ring - inner, filled: false });
     }
   }
 

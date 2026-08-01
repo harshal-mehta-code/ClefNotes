@@ -102,8 +102,9 @@ A classical computer-vision pipeline, not a model, because it has to run offline
 inside a static site:
 
 Otsu threshold → horizontal projection for staff lines → staff-line removal →
-run-length shape tests for noteheads, filled and hollow → key signature at the
-head of each staff → accidentals printed beside each notehead.
+run-length shape tests for filled noteheads and a ring test for hollow ones →
+key signature at the head of each staff → accidentals printed beside each
+notehead.
 
 Pages are rendered and recognised **one at a time** and released before the
 next: a page at this resolution is ~30 MB of pixels, and holding a seven-page
@@ -116,6 +117,32 @@ gap heuristic collapsed a two-part score into four.
 
 Pitch is then pure geometry — the number of half-spaces from the bottom staff
 line — mapped through the clef and the key.
+
+Erasing the staff lines is more delicate than it looks, and getting it wrong is
+invisible rather than obvious. The rule is that ink standing tall at a line
+belongs to something else and survives; how tall counts as tall used to be
+guessed from the staff spacing, generously. Generously enough to erase *hollow*
+noteheads, whose outline is a few pixels of ink where a filled head is a whole
+staff space of it. Half notes and whole notes came out of it shredded into
+arcs and were then found by nothing, while every quarter note came through
+perfectly — so the failure looked like a quirk of certain notes rather than a
+line-removal bug. Each line now measures itself: along most of its length a
+staff line has nothing on it but itself, which makes the median run height
+along it the line's own thickness, at any resolution and in any engraving.
+
+Hollow heads are then found as a **ring**: paper in the middle, ink in an
+annulus around it, and no ink much beyond that. The area measure matters. The
+obvious test — probe outward from the middle and look for the rim in four
+directions — meets the outline at exactly four pixels, so one broken pixel
+loses the note, and at this size most heads have a break somewhere, usually
+where the stem joins. What stops a beam gap or the counter of a lyric from
+reading as a notehead is that the paper inside a head *stops*: a gap between
+beams is ringed the same way but runs on out of the ring.
+
+Where a staff begins is the longest unbroken run of ink along its middle line,
+not the leftmost ink on that row — a part name like "Melody" is printed exactly
+there, and everything measured from the staff's left edge then starts in the
+wrong place. That one had a treble clef being read as a pair of noteheads.
 
 Key signatures are read the same way — by position, not by shape. The sharps
 and the flats of a key signature are printed in fixed orders that start in
@@ -229,6 +256,8 @@ src/
 - Handwritten and heavily ornamented scores read poorly; the detector expects
   clean printed engraving.
 - Grace notes, cue notes and small ossia staves are treated like anything else.
+- A tempo mark printed above the first staff can leave a note-shaped mark or
+  two at the start of a piece.
 - Noteheads more than about two ledger lines away from a staff are skipped, to
   avoid reading lyric text as notes.
 - There is no playback of a passage in time, on purpose. Clicking is the whole

@@ -100,6 +100,20 @@ for (let i = 0; i < 180; i++) {
 check('the PDF imports', !info.error, info.error ?? '');
 check('staves are found', info.staves > 0, `${info.staves} staves on ${info.pages} pages`);
 check('noteheads are found', info.notes > 0, `${info.notes} notes`);
+
+// Hollow heads — minims and semibreves — are half the notation and were once
+// missed wholesale, because erasing the staff lines erased their outlines too.
+// Nothing said so: they simply were not there, and clicking one sounded
+// whatever the click height happened to mean.
+const heads = await page.evaluate(() => {
+  const n = window.__cn.getState().score.notes;
+  return { hollow: n.filter((x) => !x.filled).length, filled: n.filter((x) => x.filled).length };
+});
+check(
+  'hollow noteheads are found too, not just filled ones',
+  heads.hollow > heads.filled * 0.04,
+  `${heads.hollow} hollow · ${heads.filled} filled`,
+);
 check('the page image is shown, not a re-engraving', (await page.locator('main img').count()) > 0);
 
 // The whole product: click a notehead, hear it.
