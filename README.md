@@ -169,6 +169,16 @@ stem, and a lone bowl looks much like a sharp. Where the marks do not fit either
 pattern the staff reports nothing rather than a guess, and inherits the key in
 force — which is what a key signature does anyway.
 
+Barlines are read too, and only for one reason: an accidental printed on a note
+holds for the rest of *that bar*, on that staff, at that exact line or space —
+so a bar can carry four F♯s and print only the first. Reading only the printed
+one plays the other three a semitone flat with nothing on screen to say so, and
+carrying it past the barline is wrong in the other direction. A barline is the
+one thing that runs the full height of the staff and no further; a stem comes
+close but always falls short of both lines at once, and where a beamed group
+makes a long one it has a notehead attached, so anything standing beside a
+notehead is not a barline.
+
 **What it does not read**, by design: durations, rests, ties, slurs, dynamics,
 articulation, repeats, time signatures. None of them are needed to answer "what
 does this note sound like", and every one of them is a way to be wrong.
@@ -275,6 +285,9 @@ src/
 - Accidental detection is good, not perfect: roughly one in forty is imagined
   or missed, usually where a beam crowds the notehead. Tap the note and set it.
 - Double sharps and double flats are not read, and cannot be set.
+- An accidental is carried to the rest of its bar on the same line, which is the
+  rule; it is not carried into a tied note across a barline, which is also the
+  rule but needs ties, and ties are not read.
 - Handwritten and heavily ornamented scores read poorly; the detector expects
   clean printed engraving.
 - A photo has to be square-on and filling the frame. Tilt is corrected, but

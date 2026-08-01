@@ -98,6 +98,12 @@ export interface DetectedStaff {
    * setting gets a modulation wrong for every note after it.
    */
   sharps: number | null;
+  /**
+   * X of each barline on this staff. The app reads no rhythm and wants none,
+   * but an accidental holds only to the end of its bar, so it has to know where
+   * the bars end.
+   */
+  bars: number[];
 }
 
 /** The keys a score can be in, in the order a musician thinks of them. */
@@ -174,10 +180,52 @@ export function staffSharps(staff: DetectedStaff, score: PageScore): number {
   return staff.sharps ?? score.sharps;
 }
 
-/** The accidental in force on a note: what the user said, else what was read. */
-export function noteAlter(note: DetectedNote, score: PageScore): Alter {
+/** Where a note sits, allowing for any correction: the line or space it names. */
+const lineOf = (note: DetectedNote, score: PageScore): number =>
+  note.step + (score.nudges[note.id] ?? 0);
+
+/**
+ * The accidental *printed on* a note — what the user said it is, else what was
+ * read off the page there. Null means nothing is printed on this note, which is
+ * not the same as this note being natural.
+ */
+export function notePrinted(note: DetectedNote, score: PageScore): Alter {
   const alters = score.alters ?? {};
   return note.id in alters ? alters[note.id] : (note.accidental ?? null);
+}
+
+/**
+ * The accidental actually in force on a note.
+ *
+ * A sharp, flat or natural printed on a note holds for the rest of that bar —
+ * on that staff, at that exact line or space, so in that octave and no other —
+ * until another sign changes it, and the next barline cancels it. That is the
+ * rule as engravers write it, and it is why a bar can carry four F♯s and print
+ * only the first: reading only the printed one plays the other three a semitone
+ * flat, with nothing on screen to say so.
+ */
+export function noteAlter(note: DetectedNote, score: PageScore): Alter {
+  const own = notePrinted(note, score);
+  if (own !== null) return own;
+
+  const staff = score.staves.find((s) => s.id === note.staff);
+  if (!staff) return null;
+  // Back as far as the barline before this note, and no further.
+  let barStart = -Infinity;
+  for (const b of staff.bars ?? []) if (b <= note.x && b > barStart) barStart = b;
+
+  const line = lineOf(note, score);
+  let carried: Alter = null;
+  let from = -Infinity;
+  for (const other of score.notes) {
+    if (other.staff !== note.staff || other.x >= note.x || other.x < barStart) continue;
+    if (other.x <= from || lineOf(other, score) !== line) continue;
+    const printed = notePrinted(other, score);
+    if (printed === null) continue;
+    carried = printed;
+    from = other.x;
+  }
+  return carried;
 }
 
 /** The sounding pitch of a note, including any correction the user has made. */

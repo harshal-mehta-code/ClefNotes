@@ -478,6 +478,53 @@ export function findHeads(
     .sort((a, b) => a.x - b.x);
 }
 
+// --- barlines --------------------------------------------------------------
+
+/**
+ * Where the measures end.
+ *
+ * The app reads no rhythm and wants none, but it cannot avoid measures: an
+ * accidental printed on a note holds for the rest of its bar and stops dead at
+ * the next barline. Without knowing where the bars are, a sharp either applies
+ * to one note when the page means several, or to the whole line when the page
+ * means one — and both are wrong pitches with nothing on screen to say so.
+ *
+ * A barline is the one thing that runs the full height of the staff and no
+ * further. A stem comes close but always falls short of both lines at once, and
+ * where a beamed group makes a long one, it has a notehead attached — so
+ * anything standing next to a notehead is not a barline.
+ */
+export function findBarlines(
+  clean: Bitmap,
+  staff: RawStaff,
+  heads: Array<{ x: number }>,
+): number[] {
+  const sp = staff.spacing;
+  const top = Math.round(staff.top);
+  const bottom = Math.round(staff.bottom);
+  const height = bottom - top + 1;
+  if (height < 5) return [];
+  const need = Math.round(height * 0.96);
+
+  const full: number[] = [];
+  for (let x = Math.round(staff.left); x <= Math.round(staff.right); x++) {
+    let n = 0;
+    for (let y = top; y <= bottom; y++) if (clean.data[y * clean.w + x]) n++;
+    if (n >= need) full.push(x);
+  }
+
+  const out: number[] = [];
+  for (let i = 0; i < full.length; ) {
+    let j = i;
+    while (j + 1 < full.length && full[j + 1] - full[j] <= 2) j++;
+    const centre = (full[i] + full[j]) / 2;
+    // A stem stands beside its notehead; a barline stands alone.
+    if (!heads.some((h) => Math.abs(h.x - centre) < sp * 1.1)) out.push(centre);
+    i = j + 1;
+  }
+  return out;
+}
+
 // --- key signature ---------------------------------------------------------
 
 /**
@@ -946,9 +993,11 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
         right: s.right,
         clef,
         sharps: key.sharps,
+        bars: [],
       });
 
       const heads = findHeads(clean, s, key.endX + s.spacing * 0.6);
+      staves[staves.length - 1].bars = findBarlines(clean, s, heads);
       heads.forEach((h, i) => {
         notes.push({
           id: `${id}n${i}`,

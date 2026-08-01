@@ -6,6 +6,7 @@ import {
   keyShort,
   noteAlter,
   noteName,
+  notePrinted,
   staffSharps,
   stepAt,
   stepToMidi,
@@ -209,7 +210,11 @@ export default function Sheet() {
 
   const heardNote = heard?.note ? score.notes.find((n) => n.id === heard.note) : null;
   const heardStaff = heardNote ? score.staves.find((s) => s.id === heardNote.staff) : null;
-  const heardAlter = heardNote ? noteAlter(heardNote, score) : null;
+  // What is printed *on* this note is what the buttons set. What is in force is
+  // what you hear, and the two differ whenever a bar carries an accidental from
+  // an earlier note — which is most of the time, in most music.
+  const heardPrinted = heardNote ? notePrinted(heardNote, score) : null;
+  const carried = heardNote && heardPrinted === null && noteAlter(heardNote, score) !== null;
   // Read from the score rather than remembered, so correcting a note renames it
   // rather than leaving the old answer sitting there.
   const heardLabel =
@@ -503,13 +508,13 @@ export default function Sheet() {
                 ).map(([value, mark]) => (
                   <button
                     key={mark}
-                    className={`btn px-2.5 ${heardAlter === value ? 'btn-on' : ''}`}
+                    className={`btn px-2.5 ${heardPrinted === value ? 'btn-on' : ''}`}
                     title={
-                      heardAlter === value
-                        ? 'Tap again if nothing is printed here'
-                        : `There is a ${mark} beside this note on the page`
+                      heardPrinted === value
+                        ? 'Tap again if nothing is printed on this note'
+                        : `There is a ${mark} printed beside this note on the page`
                     }
-                    onClick={() => setAlter(heardNote.id, heardAlter === value ? null : value)}
+                    onClick={() => setAlter(heardNote.id, heardPrinted === value ? null : value)}
                   >
                     {mark}
                   </button>
@@ -518,6 +523,14 @@ export default function Sheet() {
             </>
           ) : (
             <span className="lbl hidden sm:inline">from the staff line</span>
+          )}
+          {carried && (
+            <span
+              className="lbl hidden sm:inline"
+              title="An accidental earlier in this bar is still in force on this line. It lasts until the barline."
+            >
+              held from earlier in the bar
+            </span>
           )}
           <button
             className="btn btn-ghost ml-1"

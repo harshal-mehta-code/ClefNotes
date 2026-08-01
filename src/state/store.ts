@@ -117,6 +117,7 @@ const hydrate = (s: PageScore): PageScore => ({
   ...s,
   nudges: s.nudges ?? {},
   alters: s.alters ?? {},
+  staves: (s.staves ?? []).map((st) => ({ ...st, bars: st.bars ?? [] })),
 });
 
 export const useApp = create<AppState>((set, get) => ({

@@ -90,8 +90,8 @@ class Player {
     const ctx = await this.ensure();
     const when = ctx.currentTime + 0.005;
     const preset = INSTRUMENTS[this.instrument] ?? INSTRUMENTS.piano;
-    const nodes = this.buildVoice(ctx, preset, midiToFreq(midi), when, duration);
-    this.live.push({ nodes, endsAt: when + duration + preset.release + 0.2, midi });
+    const { nodes, endsAt } = this.buildVoice(ctx, preset, midiToFreq(midi), when, duration);
+    this.live.push({ nodes, endsAt, midi });
 
     // Keep a lid on how many voices can overlap while dragging across a staff.
     this.live = this.live.filter((v) => v.endsAt > ctx.currentTime - 0.3);
@@ -131,7 +131,7 @@ class Player {
     freq: number,
     when: number,
     dur: number,
-  ): AudioScheduledSourceNode[] {
+  ): { nodes: AudioScheduledSourceNode[]; endsAt: number } {
     const started: AudioScheduledSourceNode[] = [];
 
     const amp = ctx.createGain();
@@ -143,12 +143,26 @@ class Player {
     filter.connect(this.master);
 
     const track = p.keyTrack ?? 0.5;
-    const cutoff = Math.min(ctx.sampleRate / 2.2, Math.max(180, p.cutoff * Math.pow(freq / 261.63, track)));
+    const cutoff = Math.min(
+      ctx.sampleRate / 2.2,
+      Math.max(180, p.cutoff * Math.pow(freq / 261.63, track)),
+    );
     filter.frequency.setValueAtTime(cutoff, when);
     if (p.filterEnv) {
-      filter.frequency.setValueAtTime(Math.min(ctx.sampleRate / 2.2, cutoff * Math.pow(2, p.filterEnv)), when);
-      filter.frequency.exponentialRampToValueAtTime(Math.max(180, cutoff), when + (p.filterEnvDecay ?? 0.2));
+      filter.frequency.setValueAtTime(
+        Math.min(ctx.sampleRate / 2.2, cutoff * Math.pow(2, p.filterEnv)),
+        when,
+      );
+      filter.frequency.exponentialRampToValueAtTime(
+        Math.max(180, cutoff),
+        when + (p.filterEnvDecay ?? 0.2),
+      );
     }
+
+    // Shape the envelope before starting anything, so every source can be told
+    // to stop after the sound has finished rather than during it.
+    const endsAt = this.envelope(amp.gain, p, when, dur);
+    const stopAt = endsAt + 0.05;
 
     const wave = periodicWave(ctx, p.partials);
     const unison = p.unison ?? 1;
@@ -167,7 +181,7 @@ class Player {
         lfo.connect(lg);
         lg.connect(osc.detune);
         lfo.start(when);
-        lfo.stop(when + dur + p.release + 0.1);
+        lfo.stop(stopAt);
         started.push(lfo);
       }
       const ug = ctx.createGain();
@@ -175,7 +189,7 @@ class Player {
       osc.connect(ug);
       ug.connect(amp);
       osc.start(when);
-      osc.stop(when + dur + p.release + 0.1);
+      osc.stop(stopAt);
       started.push(osc);
     }
 
@@ -194,23 +208,59 @@ class Player {
       bp.connect(g);
       g.connect(this.master);
       src.start(when);
-      src.stop(when + (p.noiseDecay ?? 0.05) + 0.12);
+      src.stop(Math.min(stopAt, when + (p.noiseDecay ?? 0.05) + 0.12));
       started.push(src);
     }
 
+    return { nodes: started, endsAt };
+  }
+
+  /**
+   * The envelope, and when the sound is actually over.
+   *
+   * Every point has to be scheduled later than the one before it. Web Audio
+   * sorts automation events by time regardless of the order they were added, so
+   * a release whose end time lands *before* the decay's — which is what happens
+   * whenever an instrument decays for longer than the note is held, a piano
+   * being the obvious one — does not shorten the note. It reorders into a decay
+   * to silence followed by a ramp back *up* to the sustain level, and then the
+   * oscillator stops mid-swell. That is a fade-out that gets louder and then
+   * clicks, which is exactly what it sounded like.
+   */
+  private envelope(
+    gain: AudioParam,
+    p: (typeof INSTRUMENTS)[InstrumentId],
+    when: number,
+    dur: number,
+  ): number {
+    const FLOOR = 0.0002;
     const peak = p.gain;
-    const sustain = Math.max(0.0002, peak * p.sustain);
-    amp.gain.setValueAtTime(0.0001, when);
-    amp.gain.linearRampToValueAtTime(peak, when + p.attack);
+    const attackAt = when + p.attack;
+    const decayEnds = attackAt + p.decay;
+
+    gain.setValueAtTime(FLOOR, when);
+    gain.linearRampToValueAtTime(peak, attackAt);
+
+    // Percussive voices have no sustain: the decay *is* the note, and it ends
+    // when it has rung out rather than when the note is nominally let go.
     if (p.sustain <= 0.001) {
-      amp.gain.exponentialRampToValueAtTime(0.0002, when + p.attack + p.decay);
-    } else {
-      amp.gain.exponentialRampToValueAtTime(sustain, when + p.attack + p.decay);
-      amp.gain.setValueAtTime(sustain, Math.max(when + dur - 0.001, when + p.attack + p.decay));
-      amp.gain.exponentialRampToValueAtTime(0.0002, when + dur + p.release);
+      gain.exponentialRampToValueAtTime(FLOOR, decayEnds);
+      return decayEnds;
     }
 
-    return started;
+    const sustain = Math.max(FLOOR, peak * p.sustain);
+    const off = Math.max(when + dur, attackAt + 0.02);
+    if (off >= decayEnds) {
+      gain.exponentialRampToValueAtTime(sustain, decayEnds);
+      gain.setValueAtTime(sustain, off);
+    } else {
+      // Let go partway down. Release from where the decay had actually got to,
+      // which an exponential ramp makes exact rather than approximate.
+      const level = Math.max(FLOOR, peak * Math.pow(sustain / peak, (off - attackAt) / p.decay));
+      gain.exponentialRampToValueAtTime(level, off);
+    }
+    gain.exponentialRampToValueAtTime(FLOOR, off + p.release);
+    return off + p.release;
   }
 }
 

@@ -286,6 +286,64 @@ check(
   `♭ ${fixed.flat} · ♯ ${fixed.sharp}`,
 );
 
+// An accidental holds to the end of its bar, on that line, and stops there.
+// Printing one on an earlier note has to move the later ones with it, and has
+// to leave the next bar alone.
+const rule = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const sc = s.score;
+  const printed = (n) => (n.id in (sc.alters ?? {}) ? sc.alters[n.id] : (n.accidental ?? null));
+  // The line a note names, allowing for a correction — the same comparison the
+  // rule itself makes. An earlier check nudges a note, and matching on the
+  // printed step alone would pair up two notes that are no longer on one line.
+  const line = (n) => n.step + (sc.nudges[n.id] ?? 0);
+  for (const st of sc.staves) {
+    const bars = st.bars ?? [];
+    if (!bars.length) continue;
+    const notes = sc.notes.filter((n) => n.staff === st.id).sort((a, b) => a.x - b.x);
+    for (let i = 0; i < notes.length; i++) {
+      const a = notes[i];
+      const later = notes.find(
+        (n) =>
+          n.x > a.x &&
+          line(n) === line(a) &&
+          printed(n) === null &&
+          !bars.some((x) => x > a.x && x <= n.x),
+      );
+      if (!later) continue;
+      const beyond = notes.find(
+        (n) =>
+          n.x > a.x &&
+          line(n) === line(a) &&
+          printed(n) === null &&
+          bars.some((x) => x > a.x && x <= n.x),
+      );
+      const hear = (id) => {
+        s.soundNote(sc.notes.find((n) => n.id === id));
+        return window.__cn.getState().ringing.at(-1);
+      };
+      s.setAlter(a.id, null);
+      const beforeSame = hear(later.id);
+      const beforeNext = beyond ? hear(beyond.id) : null;
+      s.setAlter(a.id, 1);
+      const afterSame = hear(later.id);
+      const afterNext = beyond ? hear(beyond.id) : null;
+      return { beforeSame, afterSame, beforeNext, afterNext, hasNext: !!beyond };
+    }
+  }
+  return null;
+});
+check(
+  'an accidental carries to the rest of its bar',
+  rule != null && rule.afterSame === rule.beforeSame + 1,
+  rule ? `${rule.beforeSame} → ${rule.afterSame}` : 'no two notes share a line within a bar',
+);
+check(
+  'and stops at the barline',
+  rule != null && (!rule.hasNext || rule.afterNext === rule.beforeNext),
+  rule?.hasNext ? `${rule.beforeNext} → ${rule.afterNext}` : 'no note of that line in a later bar',
+);
+
 // Zoom has to reach the page itself, or it does nothing on the screen where a
 // notehead is smallest and a fingertip is largest.
 const zoomed = await page.evaluate(async () => {
@@ -316,6 +374,37 @@ const touch = await page.evaluate(() => {
   return getComputedStyle(svg).touchAction;
 });
 check('the page can still be scrolled and pinched', touch !== 'none', `touch-action: ${touch}`);
+
+// The tail of a note. The envelope is scheduled as a list of automation events
+// and the browser sorts them by time, so a release whose end time landed before
+// the decay's turned into a fade to silence followed by a swell back up and
+// then a hard stop. That is audible and was, so the shape gets measured.
+const tail = await page.evaluate(async () => {
+  const p = window.__player;
+  p.createMeter();
+  await p.play(69, 1.1);
+  const out = [];
+  const t0 = performance.now();
+  while (performance.now() - t0 < 2400) {
+    out.push(p.outputLevel());
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return out;
+});
+const loudest = Math.max(...tail);
+let swell = 0;
+let quietest = Infinity;
+for (let i = tail.indexOf(loudest) + 1; i < tail.length; i++) {
+  const v = tail[i] / loudest;
+  quietest = Math.min(quietest, v);
+  // A rise well clear of the floor, after the sound had already died away.
+  if (v > 0.02 && v > quietest * 3) swell = Math.max(swell, v);
+}
+check(
+  'a note fades out rather than swelling back and clicking off',
+  loudest > 0.01 && swell === 0,
+  swell ? `rose back to ${(swell * 100).toFixed(0)}% of peak` : `peak ${loudest.toFixed(3)}`,
+);
 
 check('the keyboard is on screen', (await page.locator('canvas').count()) >= 1);
 check('no console errors', errors.length === 0, errors.slice(0, 2).join(' | '));
