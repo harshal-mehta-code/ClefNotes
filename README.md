@@ -83,6 +83,13 @@ This is what makes a recognised PDF into a score you can rely on. Editing turns
 itself off on scores where notes can't be lined up one-for-one, rather than
 risk changing the wrong one.
 
+**Transposing instruments** — tell a part you play a B♭ trumpet and the
+notation is rewritten to what you actually read, while playback shifts the
+other way so the piece still sounds in the key everyone else is in.
+
+**Perform** — fills the screen with a larger engraving, hides everything else
+and asks the screen to stay awake. For a phone or tablet on a music stand.
+
 **Share** — one button packs the score, the mix and the loop into a link.
 A whole SATB movement comes to about 3 KB of URL. It travels in the fragment,
 so it is never sent to a server: a section leader can set the altos loud with
@@ -91,9 +98,13 @@ bars 41–56 looping and send that exact state to eleven people.
 **Practice Lab** — a trouble map where bars redden as you keep going back to
 them, and one tap builds a drill from just those bars. A tempo ramp where each
 clean pass unlocks +5%. Live pitch scoring from the microphone via YIN
-autocorrelation, with a tuning meter in cents. **Ear training** whose questions
-are drawn from the piece you have open, so getting better at intervals is the
-same work as learning the music. Streaks, XP and per-score mastery.
+autocorrelation, with a tuning meter in cents. A **tuner**, with selectable
+reference pitch, because everyone tunes before they practise. **Record a take**
+over the score and play it back with the score running underneath — almost
+everyone rushes somewhere they can't hear while concentrating. **Ear training**
+whose questions are drawn from the piece you have open, so getting better at
+intervals is the same work as learning the music. Streaks, XP and per-score
+mastery.
 
 **Progress** — a daily goal ring, twelve levels from Beginner to Maestro, and
 eighteen achievements that reward practice *habits* rather than time served:
@@ -136,7 +147,7 @@ npm install
 npm run dev          # development
 npm run build        # production build into dist/
 npm run preview      # serve the build
-npm run smoke        # 19 end-to-end browser checks against the preview
+npm run smoke        # 23 end-to-end browser checks against the preview
 ```
 
 ### Deploying
@@ -218,3 +229,6 @@ All public domain. The harmonisations are original to this project.
 - Share links carry the score itself, so a very large orchestral work will
   exceed what a URL can hold. The app says so and points at MusicXML export
   rather than producing a link that silently truncates.
+- Recorded takes are kept in memory for the session only. A recording of
+  someone practising is private, and quietly filling their disk with it is not
+  a decision to make on their behalf — save the ones you want to keep.

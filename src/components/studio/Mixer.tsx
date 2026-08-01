@@ -4,6 +4,23 @@ import { instrumentsByFamily, SOUND_PACKS } from '../../lib/audio/instruments';
 import { VOICE_PRESETS } from '../../lib/audio/clefvox';
 import { Chip, Label } from '../ui/primitives';
 
+/**
+ * Written transpositions.
+ *
+ * A B♭ trumpeter reads a whole tone above concert pitch. Choosing an instrument
+ * here rewrites the notation to what that player actually reads, and shifts the
+ * playback back the other way — so you read your own part and still hear the
+ * piece in the key the rest of the ensemble is in.
+ */
+const TRANSPOSING = [
+  { label: 'Concert pitch', semitones: 0 },
+  { label: 'B♭ (trumpet, clarinet, tenor sax)', semitones: 2 },
+  { label: 'E♭ (alto sax, alto clarinet)', semitones: 9 },
+  { label: 'F (horn, English horn)', semitones: 7 },
+  { label: 'A (clarinet in A)', semitones: 3 },
+  { label: 'B♭ bass (bass clarinet, tenor)', semitones: 14 },
+];
+
 export default function Mixer() {
   const score = useApp((s) => s.score);
   const mixes = useApp((s) => s.mixes);
@@ -14,6 +31,8 @@ export default function Mixer() {
   const packId = useApp((s) => s.packId);
   const transport = useApp((s) => s.transport);
   const patch = useApp((s) => s.patchTransport);
+  const writtenTranspose = useApp((s) => s.writtenTranspose);
+  const transposePartWritten = useApp((s) => s.transposePartWritten);
 
   if (!score) return null;
   const anySolo = mixes.some((m) => m.solo);
@@ -141,6 +160,23 @@ export default function Mixer() {
                   <span className="num w-8 text-[10px] text-ink3">
                     {mix.pan === 0 ? 'C' : mix.pan < 0 ? `L${Math.round(-mix.pan * 9)}` : `R${Math.round(mix.pan * 9)}`}
                   </span>
+                </div>
+
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="lbl w-16">My instr.</span>
+                  <select
+                    className="field min-w-0 flex-1"
+                    value={writtenTranspose[i] ?? 0}
+                    onChange={(e) => void transposePartWritten(i, Number(e.target.value))}
+                    aria-label={`Transposing instrument for ${part.name}`}
+                    title="Rewrite this part for a transposing instrument — you read your part, everyone still hears concert pitch"
+                  >
+                    {TRANSPOSING.map((t) => (
+                      <option key={t.semitones} value={t.semitones}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="mt-2 flex flex-wrap gap-1.5">

@@ -165,6 +165,38 @@ await page.waitForTimeout(700);
 const badges = await page.evaluate(() => window.__cn.getState().unlocked.length);
 check('achievements unlock from real activity', badges > 0, `${badges} earned`);
 
+// --- transposing instruments ----------------------------------------------
+await page.locator('nav button:has-text("Studio")').click();
+await page.waitForTimeout(500);
+const concert = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  return { midi: s.score.notes.find((n) => n.part === 0).midi, mix: s.mixes[0].transpose };
+});
+await page.locator('aside select[aria-label^="Transposing instrument"]').first().selectOption('2');
+await page.waitForTimeout(4000);
+const transposed = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  return { midi: s.score.notes.find((n) => n.part === 0).midi, mix: s.mixes[0].transpose };
+});
+check(
+  'B-flat part is written a tone up',
+  transposed.midi === concert.midi + 2,
+  `${concert.midi} → ${transposed.midi}`,
+);
+check(
+  'and playback compensates so it still sounds in concert pitch',
+  transposed.midi + transposed.mix === concert.midi + concert.mix,
+  `written ${transposed.midi} + offset ${transposed.mix}`,
+);
+await page.locator('aside select[aria-label^="Transposing instrument"]').first().selectOption('0');
+await page.waitForTimeout(4000);
+
+// --- tuner and recorder are present ---------------------------------------
+await page.locator('nav button:has-text("Practice Lab")').click();
+await page.waitForTimeout(800);
+check('tuner is available', (await page.locator('button:has-text("Start the tuner")').count()) === 1);
+check('take recorder is available', (await page.locator('button:has-text("Record a take")').count()) === 1);
+
 check('no console errors', errors.length === 0, errors.slice(0, 3).join(' | '));
 
 await browser.close();

@@ -31,6 +31,34 @@ export default function Studio() {
   );
   const [showKeys, setShowKeys] = useState(true);
 
+  /**
+   * Performance mode: everything but the music gets out of the way, the
+   * engraving grows, and the screen is asked to stay awake. This is the mode
+   * for a phone or tablet propped on a music stand.
+   */
+  const togglePerformance = async () => {
+    const el = document.documentElement;
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {});
+      setShowMixer(window.innerWidth >= 768);
+      setShowKeys(true);
+      await reEngrave({ scale: 42 });
+    } else {
+      await el.requestFullscreen?.().catch(() => {});
+      setShowMixer(false);
+      setShowKeys(false);
+      await reEngrave({ scale: 56 });
+      // Best effort: not every browser exposes this, and it is not essential.
+      try {
+        await (
+          navigator as Navigator & { wakeLock?: { request: (t: 'screen') => Promise<unknown> } }
+        ).wakeLock?.request('screen');
+      } catch {
+        /* screen may dim; the score still plays */
+      }
+    }
+  };
+
   if (!score) {
     return (
       <div className="mx-auto max-w-[900px] px-5 py-20 text-center">
@@ -85,6 +113,12 @@ export default function Studio() {
           )}
           <Chip on={showKeys} onClick={() => setShowKeys((v) => !v)} title="Piano keyboard">
             Keys
+          </Chip>
+          <Chip
+            onClick={() => void togglePerformance()}
+            title="Fill the screen with the music — for a music stand"
+          >
+            Perform
           </Chip>
           <Chip
             on={editing}

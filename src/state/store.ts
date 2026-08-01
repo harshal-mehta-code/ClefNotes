@@ -25,7 +25,7 @@ import {
   type ProgressCounters,
 } from '../lib/progress/achievements';
 import { SHELF, shelfXml } from '../data/scores/shelf';
-import type { EditResult, EditTarget } from '../lib/score/edit';
+import { transposePart, type EditResult, type EditTarget } from '../lib/score/edit';
 
 export type ViewId = 'library' | 'studio' | 'lab' | 'vox' | 'import';
 export type ScoreViewMode = 'sheet' | 'roll' | 'split';
@@ -73,6 +73,8 @@ interface AppState {
   editStatus: string | null;
   /** Previous versions of the MusicXML, newest last. */
   undoStack: string[];
+  /** Written transposition applied per part, for transposing instruments. */
+  writtenTranspose: Record<number, number>;
 
   setView: (v: ViewId) => void;
   setScoreMode: (m: ScoreViewMode) => void;
@@ -110,6 +112,7 @@ interface AppState {
   selectNote: (target: EditTarget | null) => void;
   moveSelection: (delta: number) => void;
   applyEdit: (fn: (score: Score, target: EditTarget) => EditResult) => Promise<void>;
+  transposePartWritten: (partIndex: number, semitones: number) => Promise<void>;
   undoEdit: () => Promise<void>;
 
   refreshLibrary: () => Promise<void>;
@@ -170,6 +173,7 @@ export const useApp = create<AppState>((set, get) => ({
   selected: null,
   editStatus: null,
   undoStack: [],
+  writtenTranspose: {},
 
   setView: (view) => set({ view }),
   setScoreMode: (scoreMode) => set({ scoreMode }),
@@ -234,6 +238,8 @@ export const useApp = create<AppState>((set, get) => ({
         view: 'studio',
         loopBars: null,
         ramp: null,
+        writtenTranspose: {},
+        undoStack: [],
       });
       barsTouched = new Set();
       accumulatedSeconds = 0;
@@ -539,6 +545,52 @@ export const useApp = create<AppState>((set, get) => ({
         loading: false,
         loadingLabel: '',
         editStatus: e instanceof Error ? e.message : 'That edit could not be applied.',
+      });
+    }
+  },
+
+  /**
+   * Rewrite a part for a transposing instrument.
+   *
+   * A B♭ trumpeter reads a whole tone above concert pitch. So the notation is
+   * transposed up, and the part's playback is transposed down by the same
+   * amount to cancel it out — the player reads their own part and still hears
+   * the piece in the key everyone else is in.
+   */
+  transposePartWritten: async (partIndex, semitones) => {
+    const { score, mixes } = get();
+    if (!score) return;
+    const previous = score.musicXml;
+    const currentWritten = get().writtenTranspose[partIndex] ?? 0;
+    const delta = semitones - currentWritten;
+    if (delta === 0) return;
+
+    set({ loading: true, loadingLabel: 'Rewriting the part…' });
+    try {
+      const result = transposePart(score, partIndex, delta);
+      const { svg, score: rebuilt } = await engrave(result.musicXml, get().engraveOpts);
+      const full: Score = { ...rebuilt, id: score.id, source: score.source };
+      const nextMixes = mixes.map((m, i) =>
+        i === partIndex ? { ...m, transpose: m.transpose - delta } : m,
+      );
+      engine.setScore(full, nextMixes);
+      engine.patch({ bpm: get().transport.bpm, loopEndQ: full.totalQ });
+      set({
+        score: full,
+        svg,
+        mixes: nextMixes,
+        loading: false,
+        loadingLabel: '',
+        writtenTranspose: { ...get().writtenTranspose, [partIndex]: semitones },
+        undoStack: [...get().undoStack.slice(-24), previous],
+        editStatus: result.description,
+      });
+      await db.scores.update(score.id, { musicXml: result.musicXml, mixes: nextMixes });
+    } catch (e) {
+      set({
+        loading: false,
+        loadingLabel: '',
+        editStatus: e instanceof Error ? e.message : 'That part could not be transposed.',
       });
     }
   },

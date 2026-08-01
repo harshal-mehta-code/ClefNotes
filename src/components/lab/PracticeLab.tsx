@@ -6,6 +6,8 @@ import { heatOf, recordBars, type Heat } from '../../lib/db/db';
 import { midiName } from '../../lib/score/types';
 import { Chip, Meter, Panel, Stat } from '../ui/primitives';
 import EarTrainer from './EarTrainer';
+import Recorder from './Recorder';
+import Tuner from './Tuner';
 
 const HEAT_COLOUR: Record<Heat, string> = {
   untouched: 'rgb(var(--sunk))',
@@ -205,6 +207,10 @@ export default function PracticeLab() {
           </div>
         </Panel>
 
+        <Panel title="Record yourself">
+          <Recorder />
+        </Panel>
+
         <Panel title="Ear training">
           <EarTrainer />
         </Panel>
@@ -268,6 +274,10 @@ export default function PracticeLab() {
       </div>
 
       <div className="flex flex-col gap-4">
+        <Panel title="Tuner">
+          <Tuner />
+        </Panel>
+
         <Panel title="Listening to you">
           {micError && <p className="mb-2 text-[13px] leading-snug text-crit">{micError}</p>}
           <button
