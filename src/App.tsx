@@ -15,8 +15,7 @@ export default function App() {
   const closeScore = useApp((s) => s.closeScore);
   const instrument = useApp((s) => s.instrument);
   const setInstrument = useApp((s) => s.setInstrument);
-  const zoom = useApp((s) => s.zoom);
-  const setZoom = useApp((s) => s.setZoom);
+  const zoomBy = useApp((s) => s.zoomBy);
   const showNotes = useApp((s) => s.showNotes);
   const setShowNotes = useApp((s) => s.setShowNotes);
   const setSharps = useApp((s) => s.setSharps);
@@ -110,8 +109,11 @@ export default function App() {
               </select>
             </div>
 
+            {/* Zoom earns its place on a phone, where a notehead is a couple of
+                millimetres across and a fingertip is not. The dots and the roll
+                are worth less than that room, so they wait for a wider screen. */}
             <button
-              className={`chip ${showNotes ? 'chip-on' : ''}`}
+              className={`chip hidden sm:inline-block ${showNotes ? 'chip-on' : ''}`}
               onClick={() => setShowNotes(!showNotes)}
               title="Show or hide the dots over each detected note"
             >
@@ -123,19 +125,19 @@ export default function App() {
             >
               Roll
             </button>
-            {/* Zoom does nothing on a phone — the page is already as wide as
-                the screen — so it only appears where it has an effect. */}
             <button
-              className="chip hidden sm:inline-block"
-              onClick={() => setZoom(Math.max(0.6, zoom - 0.15))}
+              className="chip"
+              onClick={() => zoomBy(-0.25)}
               title="Smaller"
+              aria-label="Zoom out"
             >
               −
             </button>
             <button
-              className="chip hidden sm:inline-block"
-              onClick={() => setZoom(Math.min(2.4, zoom + 0.15))}
+              className="chip"
+              onClick={() => zoomBy(0.25)}
               title="Larger"
+              aria-label="Zoom in"
             >
               +
             </button>
@@ -151,7 +153,9 @@ export default function App() {
           className={`lbl shrink-0 rounded-sm px-2 py-1 hover:bg-ink hover:text-paper ${
             view === 'sheet' ? 'hidden sm:block' : 'ml-auto'
           }`}
-          onClick={() => setTheme(theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark')}
+          onClick={() =>
+            setTheme(theme === 'dark' ? 'light' : theme === 'light' ? 'system' : 'dark')
+          }
           title="Light, dark, or follow the system"
         >
           {theme === 'system' ? 'Auto' : theme === 'dark' ? 'Dark' : 'Light'}

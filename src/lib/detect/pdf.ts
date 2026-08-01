@@ -103,6 +103,7 @@ export async function importPdf(
     notes,
     sharps: commonKey(staves),
     nudges: {},
+    alters: {},
   };
 }
 

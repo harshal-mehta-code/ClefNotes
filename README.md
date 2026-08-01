@@ -48,7 +48,13 @@ the one that is reliable.
 **The sheet.** Your PDF, page by page, with a transparent layer over it that
 knows where the staves and noteheads are. Detected notes carry a faint dot, so
 you can see what the app found — toggle it off when you want a clean page.
-Hovering shows the pitch under the pointer. Zoom to taste.
+Hovering shows the pitch under the pointer.
+
+**Zoom.** `−` and `+` widen the page itself rather than the window, so it stays
+sharp, and a zoomed page pans sideways. It matters most on a phone, where a
+notehead is a couple of millimetres across and a fingertip is not — which is
+where it used to be hidden, on the theory that a page already filling the screen
+had nothing left to zoom.
 
 **Instruments.** About twenty synthesised voices — pianos, strings, winds,
 brass, organs, mallets, plucked. Synthesised rather than sampled because
@@ -63,9 +69,14 @@ see and easy to hear.
 **Keyboard.** A piano along the bottom that lights up with whatever is
 sounding, so an interval you can hear gets a name and a shape.
 
-**Corrections.** Click a note and the arrow keys move it: `↑` `↓` a step,
-`shift ↑` `↓` an octave. Corrected notes turn gold so you can see what you have
-touched, and the correction is saved with the score.
+**What you just heard, named.** Every tap puts the pitch on screen — `F♯4` —
+which is the only way to tell whether the app agrees with the page in front of
+you. Beside it are `♭` `♮` `♯`: they say what is *printed* on the note, which is
+something you can read straight off the page, rather than asking you which way
+the pitch ought to move. Tap the lit one to say there is nothing printed there
+after all. Corrected notes turn gold, and the correction is saved with the
+score. (With a keyboard, `↑` `↓` also move a note a step and `shift ↑` `↓` an
+octave, for the rarer case of a notehead read onto the wrong line.)
 
 **Clef per staff.** Recognition cannot see the small 8 under a tenor clef, and
 the wrong clef puts a whole staff in the wrong octave. There is a picker on
@@ -92,7 +103,7 @@ inside a static site:
 
 Otsu threshold → horizontal projection for staff lines → staff-line removal →
 run-length shape tests for noteheads, filled and hollow → key signature at the
-head of each staff.
+head of each staff → accidentals printed beside each notehead.
 
 Pages are rendered and recognised **one at a time** and released before the
 next: a page at this resolution is ~30 MB of pixels, and holding a seven-page
@@ -120,10 +131,27 @@ force — which is what a key signature does anyway.
 articulation, repeats, time signatures. None of them are needed to answer "what
 does this note sound like", and every one of them is a way to be wrong.
 
-Deliberately unhandled: accidentals written in front of a note. Those are a
-one-note exception rather than a rule for the staff, and they sit close enough
-to the notehead to be confused with it — so a sharp mid-bar won't move the
-pitch, and you nudge it with the arrow keys instead.
+Accidentals printed beside a notehead are read too, and they have to be: a note
+carrying a sharp sounds a semitone wrong without one, and nothing on screen says
+so — the app and the page disagree and only the page is right. What makes them
+findable in open music is that an accidental *hugs* its notehead, where a rest
+or the previous note sits a beat away, so the search reaches about two staff
+spaces to the left and no further. Everything else is shape: engraving fixes an
+accidental at roughly two to three staff spaces tall and much taller than it is
+wide, which a beam, a notehead and a time signature all fail.
+
+Telling the three apart needs one more distinction than it looks. A sharp is
+wide at the top and the bottom, a flat is a stem over a bowl, a natural is two
+half-height strokes — but measured by the *widest* row, a natural's top quarter
+just catches its upper crossbar and is exactly as wide as a sharp's. Every
+natural in the test score read as a sharp until the measure changed to the
+*typical* row. At the head of a staff the opposite holds, because there a flat
+often arrives as a bare bowl with its stem lost in the threshold, and only the
+widest row still says "bowl" — so the two readings use the two statistics, on
+purpose.
+
+On the seven-page barbershop chart this was tuned against, that finds 62
+accidentals across 985 notes and gets one or two of them wrong.
 
 ---
 
@@ -135,6 +163,7 @@ npm run dev          # development
 npm run build        # production build into dist/
 npm run preview      # serve the build
 npm run smoke -- score.pdf   # end-to-end browser checks against the preview
+npm run mobile -- score.pdf  # the same app at phone width, with real touch
 ```
 
 The smoke test drives a real browser against the production build, imports a
@@ -142,6 +171,12 @@ PDF you point it at, clicks a notehead, and measures the **master audio bus** to
 confirm sound actually came out. That last part matters: an earlier version
 verified audio with an offline render, which passed happily while live playback
 was completely silent.
+
+The mobile run is separate because nothing it checks can fail at desktop width.
+A swipe has to scroll the page and stay silent, a tap has to sound one note, the
+zoom control has to exist and reach the page, and everything in the header has
+to fit on screen. All four were broken at once on a phone while the desktop
+suite was green.
 
 ### Deploying
 
@@ -188,8 +223,9 @@ src/
 
 ## Known limits
 
-- Accidentals printed next to a note are not read — only the key signature is
-  — so a note marked sharp mid-bar sounds natural until you nudge it.
+- Accidental detection is good, not perfect: roughly one in forty is imagined
+  or missed, usually where a beam crowds the notehead. Tap the note and set it.
+- Double sharps and double flats are not read, and cannot be set.
 - Handwritten and heavily ornamented scores read poorly; the detector expects
   clean printed engraving.
 - Grace notes, cue notes and small ossia staves are treated like anything else.

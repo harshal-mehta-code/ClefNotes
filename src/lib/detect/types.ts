@@ -35,23 +35,32 @@ const BOTTOM_LINE: Record<ClefId, number> = {
 const LETTER_SEMITONE = [0, 2, 4, 5, 7, 9, 11];
 const LETTERS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
 
-/** A staff step (0 = bottom line, +1 per half-space upward) to a MIDI pitch. */
-export function stepToMidi(step: number, clef: ClefId, sharps = 0): number {
+/**
+ * Whether an accidental printed beside the note applies, and what it does.
+ * `null` means nothing is printed there, so the key signature decides.
+ */
+export type Alter = -1 | 0 | 1 | null;
+
+/**
+ * A staff step (0 = bottom line, +1 per half-space upward) to a MIDI pitch.
+ *
+ * An accidental printed on the page overrides the key signature rather than
+ * adding to it — that is the whole point of one. A natural beside a B in E♭
+ * major means B natural, not B double-flat.
+ */
+export function stepToMidi(step: number, clef: ClefId, sharps = 0, alter: Alter = null): number {
   const index = BOTTOM_LINE[clef] + step;
   const octave = Math.floor(index / 7);
   const letter = ((index % 7) + 7) % 7;
-  let midi = (octave + 1) * 12 + LETTER_SEMITONE[letter];
-  // The key signature raises or lowers particular letters everywhere.
-  midi += keyAlteration(letter, sharps);
-  return midi;
+  return (octave + 1) * 12 + LETTER_SEMITONE[letter] + (alter ?? keyAlteration(letter, sharps));
 }
 
-export function stepToName(step: number, clef: ClefId, sharps = 0): string {
+export function stepToName(step: number, clef: ClefId, sharps = 0, alter: Alter = null): string {
   const index = BOTTOM_LINE[clef] + step;
   const octave = Math.floor(index / 7);
   const letter = ((index % 7) + 7) % 7;
-  const alter = keyAlteration(letter, sharps);
-  const mark = alter === 1 ? '♯' : alter === -1 ? '♭' : '';
+  const applied = alter ?? keyAlteration(letter, sharps);
+  const mark = applied === 1 ? '♯' : applied === -1 ? '♭' : '';
   return `${LETTERS[letter]}${mark}${octave - 1}`;
 }
 
@@ -124,6 +133,11 @@ export interface DetectedNote {
   step: number;
   /** True for a solid notehead; hollow ones are minims and semibreves. */
   filled: boolean;
+  /**
+   * A sharp, natural or flat printed immediately before this notehead, if one
+   * was found. Null means none was, and the key signature applies.
+   */
+  accidental: Alter;
 }
 
 export interface ScorePage {
@@ -146,6 +160,13 @@ export interface PageScore {
   sharps: number;
   /** Pitch corrections, keyed by note id: half-steps of staff position. */
   nudges: Record<string, number>;
+  /**
+   * Accidentals the user has set, keyed by note id, overriding whatever was
+   * read off the page. A stored `null` is a real answer — "nothing is printed
+   * beside this note" — which is why absence from the record is what means
+   * "nobody has said", and the two cannot be collapsed.
+   */
+  alters: Record<string, Alter>;
 }
 
 /** The key in force on a staff: what was read there, or the score's default. */
@@ -153,13 +174,29 @@ export function staffSharps(staff: DetectedStaff, score: PageScore): number {
   return staff.sharps ?? score.sharps;
 }
 
+/** The accidental in force on a note: what the user said, else what was read. */
+export function noteAlter(note: DetectedNote, score: PageScore): Alter {
+  const alters = score.alters ?? {};
+  return note.id in alters ? alters[note.id] : (note.accidental ?? null);
+}
+
 /** The sounding pitch of a note, including any correction the user has made. */
 export function noteMidi(note: DetectedNote, staff: DetectedStaff, score: PageScore): number {
-  return stepToMidi(note.step + (score.nudges[note.id] ?? 0), staff.clef, staffSharps(staff, score));
+  return stepToMidi(
+    note.step + (score.nudges[note.id] ?? 0),
+    staff.clef,
+    staffSharps(staff, score),
+    noteAlter(note, score),
+  );
 }
 
 export function noteName(note: DetectedNote, staff: DetectedStaff, score: PageScore): string {
-  return stepToName(note.step + (score.nudges[note.id] ?? 0), staff.clef, staffSharps(staff, score));
+  return stepToName(
+    note.step + (score.nudges[note.id] ?? 0),
+    staff.clef,
+    staffSharps(staff, score),
+    noteAlter(note, score),
+  );
 }
 
 /** The staff step at an arbitrary y — what makes clicking bare staff work. */

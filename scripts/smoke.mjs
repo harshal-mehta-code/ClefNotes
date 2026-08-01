@@ -140,6 +140,9 @@ check('clicking a notehead sounds it', clickPeak > 0.005, `peak ${clickPeak.toFi
 const selected = await page.evaluate(() => window.__cn.getState().selected);
 check('clicking selects the note for correction', selected != null);
 
+// The readout is the only way to tell whether the app agrees with the page.
+check('the note that sounded is named on screen', (await page.locator('text=Heard').count()) === 1);
+
 // Clicking bare staff still gives the right pitch — the safety net for a
 // notehead the detector missed.
 await page.evaluate(() => window.__cn.getState().select(null));
@@ -147,7 +150,11 @@ const before = await page.evaluate(() => window.__cn.getState().ringing.length);
 await svg.click({ position: { x: box.width * 0.62, y: box.height * first.y } });
 const staffPeak = await level();
 const after = await page.evaluate(() => window.__cn.getState().ringing.length);
-check('clicking bare staff sounds the pitch there', staffPeak > 0.005 || after > before, `peak ${staffPeak.toFixed(4)}`);
+check(
+  'clicking bare staff sounds the pitch there',
+  staffPeak > 0.005 || after > before,
+  `peak ${staffPeak.toFixed(4)}`,
+);
 
 // Correcting a pitch.
 await page.evaluate(() => {
@@ -166,7 +173,11 @@ const pitchAfter = await page.evaluate(() => {
   const s = window.__cn.getState();
   return s.score.nudges[s.score.notes[0].id] ?? 0;
 });
-check('arrow keys correct a note', pitchAfter === pitchBefore + 1, `${pitchBefore} → ${pitchAfter}`);
+check(
+  'arrow keys correct a note',
+  pitchAfter === pitchBefore + 1,
+  `${pitchBefore} → ${pitchAfter}`,
+);
 
 // Setting a clef applies to that staff on every system — the difference
 // between one tap and twenty-three on a choral chart.
@@ -225,7 +236,72 @@ const roll = await page.evaluate(async () => {
   await new Promise((r) => setTimeout(r, 1200));
   return { target, visible: window.__cn.getState().visiblePage };
 });
-check('the piano roll follows the page in view', roll.visible === roll.target, `page ${roll.visible + 1}`);
+check(
+  'the piano roll follows the page in view',
+  roll.visible === roll.target,
+  `page ${roll.visible + 1}`,
+);
+
+// Accidentals. A sharp printed beside a note is the difference between the
+// right pitch and a semitone off, and nothing on screen would say which — so
+// they are read, and they are correctable.
+const acc = await page.evaluate(() => {
+  const sc = window.__cn.getState().score;
+  const marked = sc.notes.filter((n) => n.accidental != null);
+  return { marked: marked.length, notes: sc.notes.length, first: marked[0]?.id ?? null };
+});
+check(
+  'printed accidentals are read, and sparingly',
+  acc.marked / acc.notes < 0.25,
+  `${acc.marked} of ${acc.notes} notes`,
+);
+
+// Setting one sounds it, so the pitch that comes out is what gets checked.
+const fixed = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const id = s.score.notes[0].id;
+  s.setAlter(id, -1);
+  const flat = window.__cn.getState().ringing.at(-1);
+  s.setAlter(id, 1);
+  const sharp = window.__cn.getState().ringing.at(-1);
+  return { flat, sharp };
+});
+check(
+  'saying what is printed on a note retunes it',
+  fixed.sharp - fixed.flat === 2,
+  `♭ ${fixed.flat} · ♯ ${fixed.sharp}`,
+);
+
+// Zoom has to reach the page itself, or it does nothing on the screen where a
+// notehead is smallest and a fingertip is largest.
+const zoomed = await page.evaluate(async () => {
+  const wide = () => document.querySelector('main img').getBoundingClientRect().width;
+  const before = wide();
+  window.__cn.getState().setZoom(2);
+  await new Promise((r) => setTimeout(r, 300));
+  const after = wide();
+  window.__cn.getState().setZoom(1);
+  await new Promise((r) => setTimeout(r, 300));
+  return {
+    before,
+    after,
+    scrolls:
+      document.querySelector('main').scrollWidth > document.querySelector('main').clientWidth,
+  };
+});
+check(
+  'zooming in makes the page bigger',
+  zoomed.after > zoomed.before * 1.6,
+  `${Math.round(zoomed.before)}px → ${Math.round(zoomed.after)}px`,
+);
+
+// The overlay must not eat scrolling. It once set touch-action:none over every
+// page, so a swipe to turn the page was read as a drag across the notes.
+const touch = await page.evaluate(() => {
+  const svg = document.querySelector('main svg');
+  return getComputedStyle(svg).touchAction;
+});
+check('the page can still be scrolled and pinched', touch !== 'none', `touch-action: ${touch}`);
 
 check('the keyboard is on screen', (await page.locator('canvas').count()) >= 1);
 check('no console errors', errors.length === 0, errors.slice(0, 2).join(' | '));

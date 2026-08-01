@@ -3,7 +3,13 @@ import Dexie, { type Table } from 'dexie';
 import { player } from '../lib/audio/player';
 import { INSTRUMENTS, type InstrumentId } from '../lib/audio/instruments';
 import { importPdf } from '../lib/detect/pdf';
-import { noteMidi, type ClefId, type DetectedNote, type PageScore } from '../lib/detect/types';
+import {
+  noteMidi,
+  type Alter,
+  type ClefId,
+  type DetectedNote,
+  type PageScore,
+} from '../lib/detect/types';
 
 /** Scores live on this device. Nothing is uploaded, so there is nothing to sign into. */
 class ScoreDb extends Dexie {
@@ -46,6 +52,12 @@ interface AppState {
   setInstrument: (i: InstrumentId) => void;
   setVolume: (v: number) => void;
   setZoom: (z: number) => void;
+  /**
+   * Zoom a step at a time. A step relative to the *current* zoom, not to
+   * whatever it was when the button last drew itself — otherwise two quick taps
+   * on + both read the same stale value and count as one.
+   */
+  zoomBy: (step: number) => void;
   setShowNotes: (on: boolean) => void;
 
   importFile: (file: File) => Promise<void>;
@@ -75,6 +87,12 @@ interface AppState {
   setVisiblePage: (page: number) => void;
   nudgeSelected: (steps: number) => void;
   resetNudges: () => void;
+  /**
+   * Say what accidental is printed on a note, overriding what was read there.
+   * `null` means none is — which is a different statement from saying nothing,
+   * and is how a sharp the detector imagined gets taken back off.
+   */
+  setAlter: (noteId: string, alter: Alter) => void;
 
   sound: (midi: number) => void;
   soundNote: (note: DetectedNote) => void;
@@ -87,6 +105,18 @@ const persist = (score: PageScore | null) => {
 /** Whether a stored row is a score this version of the app can actually open. */
 const readable = (s: PageScore | undefined): s is PageScore =>
   s != null && Array.isArray(s.pages) && Array.isArray(s.staves) && Array.isArray(s.notes);
+
+/**
+ * Fill in what a score saved by an earlier build has no field for. Reading a
+ * record that was never written is how the app once went white, and every
+ * release adds another chance to do it — so anything that comes off the disk
+ * goes through here first.
+ */
+const hydrate = (s: PageScore): PageScore => ({
+  ...s,
+  nudges: s.nudges ?? {},
+  alters: s.alters ?? {},
+});
 
 export const useApp = create<AppState>((set, get) => ({
   view: 'library',
@@ -125,13 +155,17 @@ export const useApp = create<AppState>((set, get) => ({
     set({ volume });
     void db.settings.put({ key: 'volume', value: volume });
   },
-  setZoom: (zoom) => set({ zoom }),
+  setZoom: (zoom) => set({ zoom: Math.min(3, Math.max(0.6, zoom)) }),
+  zoomBy: (step) =>
+    set({ zoom: Math.min(3, Math.max(0.6, Math.round((get().zoom + step) * 100) / 100)) }),
   setShowNotes: (showNotes) => set({ showNotes }),
 
   importFile: async (file) => {
     set({ loading: true, error: null, progress: { label: 'Opening…', fraction: 0 } });
     try {
-      const score = await importPdf(file, (label, fraction) => set({ progress: { label, fraction } }));
+      const score = await importPdf(file, (label, fraction) =>
+        set({ progress: { label, fraction } }),
+      );
       await db.scores.put(score);
       set({ score, view: 'sheet', loading: false, progress: null, selected: null });
       await get().refreshLibrary();
@@ -149,10 +183,12 @@ export const useApp = create<AppState>((set, get) => ({
     if (!readable(score)) {
       await db.scores.delete(id).catch(() => undefined);
       await get().refreshLibrary();
-      set({ error: 'That score was saved by an older version of ClefNotes. Import the PDF again.' });
+      set({
+        error: 'That score was saved by an older version of ClefNotes. Import the PDF again.',
+      });
       return;
     }
-    const opened = { ...score, openedAt: Date.now() };
+    const opened = { ...hydrate(score), openedAt: Date.now() };
     await db.scores.put(opened);
     set({ score: opened, view: 'sheet', selected: null, error: null });
     await get().refreshLibrary();
@@ -165,7 +201,11 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   refreshLibrary: async () => {
-    const rows = await db.scores.orderBy('openedAt').reverse().toArray().catch(() => []);
+    const rows = await db.scores
+      .orderBy('openedAt')
+      .reverse()
+      .toArray()
+      .catch(() => []);
     const usable = rows.filter(readable);
     // Scores saved by an earlier version of ClefNotes describe a rebuilt score
     // rather than a page you can click, and there is nothing in them to convert
@@ -250,6 +290,17 @@ export const useApp = create<AppState>((set, get) => ({
     set({ score: next });
     persist(next);
     const note = next.notes.find((n) => n.id === selected);
+    const staff = note && next.staves.find((s) => s.id === note.staff);
+    if (note && staff) get().sound(noteMidi(note, staff, next));
+  },
+
+  setAlter: (noteId, alter) => {
+    const score = get().score;
+    if (!score) return;
+    const next = { ...score, alters: { ...score.alters, [noteId]: alter } };
+    set({ score: next });
+    persist(next);
+    const note = next.notes.find((n) => n.id === noteId);
     const staff = note && next.staves.find((s) => s.id === note.staff);
     if (note && staff) get().sound(noteMidi(note, staff, next));
   },

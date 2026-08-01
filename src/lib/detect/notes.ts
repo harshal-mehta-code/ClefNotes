@@ -1,4 +1,4 @@
-import type { ClefId, DetectedNote, DetectedStaff } from './types';
+import type { Alter, ClefId, DetectedNote, DetectedStaff } from './types';
 
 /**
  * Reading a page.
@@ -274,13 +274,17 @@ function gapThenStroke(
 export function findHeads(
   clean: Bitmap,
   staff: RawStaff,
+  startX = 0,
 ): Array<{ x: number; y: number; step: number; filled: boolean }> {
   const sp = staff.spacing;
   const rx = sp * 0.62;
   const ry = sp * 0.46;
   const yTop = Math.max(0, Math.round(staff.top - sp * 2.6));
   const yBot = Math.min(clean.h - 1, Math.round(staff.bottom + sp * 2.6));
-  const xFrom = Math.round(staff.left + sp * 3.2); // past clef, key and time
+  // Past the clef and the key signature. A fixed distance from the left edge is
+  // not enough: where a bracket joins the staves it *is* the left edge, and the
+  // clef then sits inside the margin and gets read as a pair of noteheads.
+  const xFrom = Math.round(Math.max(staff.left + sp * 3.2, startX));
   const stride = Math.max(1, Math.round(sp / 7));
 
   const minW = sp * 0.8;
@@ -325,7 +329,8 @@ export function findHeads(
   candidates.sort((a, b) => b.score - a.score);
   const kept: typeof candidates = [];
   for (const c of candidates) {
-    if (kept.some((k) => Math.abs(k.x - c.x) < sp * 1.15 && Math.abs(k.y - c.y) < sp * 0.85)) continue;
+    if (kept.some((k) => Math.abs(k.x - c.x) < sp * 1.15 && Math.abs(k.y - c.y) < sp * 0.85))
+      continue;
     kept.push(c);
   }
 
@@ -460,12 +465,32 @@ function rowWidths(clean: Bitmap, g: Glyph): number[] {
   return out;
 }
 
-/** How wide the ink runs, as a fraction of the glyph, across a horizontal band. */
-function bandWidth(clean: Bitmap, g: Glyph, from: number, to: number): number {
+/**
+ * How wide the ink runs, as a fraction of the glyph, across a horizontal band.
+ *
+ * Which row to take is not a detail. The *widest* row is the robust measure
+ * when the glyph may be a fragment — at a staff head a flat often arrives as a
+ * bare bowl, its stem having come away in the threshold, and only the widest
+ * row still says "bowl". The *typical* row is what tells a whole natural from a
+ * whole sharp: a natural's upper crossbar starts a quarter of the way down, so
+ * by the widest row it is exactly as wide up there as a sharp is, and every
+ * natural in the test score was read as a sharp until this was split in two.
+ */
+function bandWidth(
+  clean: Bitmap,
+  g: Glyph,
+  from: number,
+  to: number,
+  stat: 'widest' | 'typical' = 'widest',
+): number {
   const rows = rowWidths(clean, g);
   const a = Math.round((rows.length - 1) * from);
   const b = Math.round((rows.length - 1) * to);
-  return Math.max(...rows.slice(a, b + 1)) / (g.x1 - g.x0 + 1);
+  const band = rows.slice(a, b + 1);
+  if (!band.length) return 0;
+  const pick =
+    stat === 'widest' ? Math.max(...band) : band.slice().sort((p, q) => p - q)[band.length >> 1];
+  return pick / (g.x1 - g.x0 + 1);
 }
 
 /**
@@ -491,17 +516,39 @@ function inkCentre(clean: Bitmap, g: Glyph): number {
 }
 
 /**
- * A sharp is two full-height strokes, so it is wide at the top and wide at the
- * bottom. A flat is a stem with a bowl hanging off the lower half: narrow on
- * top, wide underneath. A natural is a stroke on the left at the top and a
- * stroke on the right at the bottom, so it is narrow at both — and naturals
- * matter, because they cancel a key rather than declaring one.
+ * Which of the three accidentals a glyph is, or null for none of them.
+ *
+ *   sharp    two full-height strokes — ink across the whole width, top and bottom
+ *   flat     a stem over a bowl      — narrow on top, wide underneath
+ *   natural  two half-height strokes — narrow at both ends, full width across
+ *            the middle, where the two strokes overlap
+ *
+ * The three are measured, not guessed at: on the score this was tuned against,
+ * a sharp runs 0.50–0.71 of its width at the top where a flat or a natural runs
+ * 0.08–0.20, and the gap between those is wide enough to sit a threshold in
+ * without splitting hairs.
+ */
+function accidentalShape(clean: Bitmap, g: Glyph): Alter | null {
+  const top = bandWidth(clean, g, 0, 0.26, 'typical');
+  const mid = bandWidth(clean, g, 0.36, 0.64, 'typical');
+  const bottom = bandWidth(clean, g, 0.74, 1, 'typical');
+  const stem = 0.35; // anything above this is more than a bare vertical stroke
+  if (top > stem && bottom > stem) return 1;
+  // A flat's bowl runs 0.54–0.67 across the bottom quarter and a natural's
+  // lone stroke 0.10–0.20, so the line between them goes in the gap.
+  if (bottom > 0.4) return -1;
+  return mid > 0.6 ? 0 : null;
+}
+
+/**
+ * The same three shapes at the head of a staff, where a glyph is as likely to
+ * be a fragment as a whole accidental — so the widest row decides, and anything
+ * that is neither a sharp nor a flat is called a natural rather than rejected.
+ * The key-signature walk skips naturals, which is the safe way to be unsure.
  */
 function classify(clean: Bitmap, g: Glyph): 'sharp' | 'flat' | 'natural' {
-  const top = bandWidth(clean, g, 0, 0.26);
-  const bottom = bandWidth(clean, g, 0.74, 1);
-  if (top > 0.55) return 'sharp';
-  return bottom > 0.55 ? 'flat' : 'natural';
+  if (bandWidth(clean, g, 0, 0.26) > 0.55) return 'sharp';
+  return bandWidth(clean, g, 0.74, 1) > 0.55 ? 'flat' : 'natural';
 }
 
 /**
@@ -517,7 +564,11 @@ function classify(clean: Bitmap, g: Glyph): 'sharp' | 'flat' | 'natural' {
  * they sit. Shape alone confuses a common-time C with a flat; position alone
  * cannot tell a natural from the accidental it cancels.
  */
-export function readKeySignature(clean: Bitmap, staff: RawStaff, clef: ClefId): number | null {
+export function readKeySignature(
+  clean: Bitmap,
+  staff: RawStaff,
+  clef: ClefId,
+): { sharps: number | null; endX: number } {
   const sp = staff.spacing;
   const glyphs = headGlyphs(clean, staff);
 
@@ -553,7 +604,11 @@ export function readKeySignature(clean: Bitmap, staff: RawStaff, clef: ClefId): 
       const h = g.y1 - g.y0 + 1;
       return w >= sp * 0.34 && w <= sp * 1.45 && h >= sp * 0.8 && h <= sp * 4.4;
     })
-    .map((g) => ({ g, kind: classify(clean, g), step: (staff.lines[4] - inkCentre(clean, g)) / (sp / 2) }));
+    .map((g) => ({
+      g,
+      kind: classify(clean, g),
+      step: (staff.lines[4] - inkCentre(clean, g)) / (sp / 2),
+    }));
 
   /**
    * Walk the marks against what a key signature of that many sharps or flats
@@ -583,7 +638,7 @@ export function readKeySignature(clean: Bitmap, staff: RawStaff, clef: ClefId): 
       if (adjacent) broken = true;
       break;
     }
-    return { n, broken };
+    return { n, broken, endX: prev?.x1 ?? 0 };
   };
 
   // The two readings compete rather than veto each other. One accidental of a
@@ -592,18 +647,125 @@ export function readKeySignature(clean: Bitmap, staff: RawStaff, clef: ClefId): 
   // every mark would throw away the answer.
   const sharp = walk(false);
   const flat = walk(true);
+  // Where the head of the staff ends and the music begins: the last accidental
+  // of the signature, or failing that the clef. Note reading starts after it,
+  // because everything printed here is the wrong shape to be a note and the
+  // right size to be mistaken for one.
+  const clefEnd = from > 0 ? glyphs[from - 1].x1 : staff.left + sp * 3.2;
+  const endX = Math.max(clefEnd, sharp.endX, flat.endX);
+
   if (sharp.n !== flat.n) {
     const best = flat.n > sharp.n ? flat : sharp;
-    return best.broken ? null : flat.n > sharp.n ? -flat.n : sharp.n;
+    const sharps = best.broken ? null : flat.n > sharp.n ? -flat.n : sharp.n;
+    return { sharps, endX };
   }
-  if (sharp.n) return null; // equally good both ways, so neither is trusted
+  if (sharp.n) return { sharps: null, endX }; // equally good both ways, so neither is trusted
 
   // Nothing matched. Naturals with nothing after them are a key being cancelled,
   // which is positive evidence of C. Finding nothing at all is not evidence of
   // anything — it is just as likely that the signature was there and could not
   // be separated from whatever was printed beside it — so that answers null and
   // the key is inherited instead.
-  return marks.length && marks.every((m) => m.kind === 'natural') ? 0 : null;
+  const cancelled = marks.length > 0 && marks.every((m) => m.kind === 'natural');
+  return { sharps: cancelled ? 0 : null, endX: cancelled ? marks[marks.length - 1].g.x1 : endX };
+}
+
+// --- accidentals beside a note ---------------------------------------------
+
+/**
+ * The accidental printed on a notehead, if there is one.
+ *
+ * Without this a note carrying a sharp sounds a semitone flat, and nothing on
+ * screen says so — the app and the page disagree and only the page is right.
+ * That is the quietest kind of wrong, so it is worth reading even though it is
+ * the one glyph that has to be found in open music rather than at a staff head.
+ *
+ * What makes it tractable is that an accidental *hugs* its notehead. Everything
+ * else that could be mistaken for one — a rest, the previous note and its stem
+ * — either sits further away, or is the wrong size, or is a notehead already
+ * known about. Where the evidence is not clean the answer is null and the key
+ * signature applies, which is what the page would have meant anyway.
+ */
+export function readAccidental(
+  clean: Bitmap,
+  staff: RawStaff,
+  head: { x: number; y: number },
+  heads: Array<{ x: number; y: number }>,
+): Alter {
+  const sp = staff.spacing;
+  const xTo = Math.round(head.x - sp * 0.75);
+  const xFrom = Math.round(head.x - sp * 3.1);
+  const yFrom = Math.max(0, Math.round(head.y - sp * 2.1));
+  const yTo = Math.min(clean.h - 1, Math.round(head.y + sp * 2.1));
+  if (xFrom < 0 || xTo - xFrom < 2) return null;
+
+  // Columns of ink, split wherever there is a blank one. An accidental is a
+  // single connected glyph, so nothing needs bridging.
+  const spans: Array<[number, number]> = [];
+  let start = -1;
+  for (let x = xFrom; x <= xTo; x++) {
+    let inked = false;
+    for (let y = yFrom; y <= yTo && !inked; y++) inked = clean.data[y * clean.w + x] === 1;
+    if (inked) {
+      if (start < 0) start = x;
+    } else if (start >= 0) {
+      spans.push([start, x - 1]);
+      start = -1;
+    }
+  }
+  if (start >= 0) spans.push([start, xTo]);
+
+  // Nearest first: the accidental is the last thing before the notehead.
+  for (const [x0, x1] of spans.reverse()) {
+    // Too far to the left to belong to this note. A rest or the previous note
+    // leaves a beat's worth of space; an accidental leaves a whisker.
+    if (x1 < head.x - sp * 2.3) break;
+    const w = x1 - x0 + 1;
+    // The narrowest accidental here is a natural at 0.63 of a staff space, and
+    // the thing this keeps out is a stem: a bare vertical stroke is full width
+    // on every row of itself, which is exactly what a sharp looks like.
+    if (w < sp * 0.45 || w > sp * 1.4) continue;
+
+    // Only the band of rows through the notehead's own height — a stem or a
+    // beam passing overhead is a different thing sharing the same columns.
+    let y0 = -1;
+    let y1 = -1;
+    for (let y = Math.round(head.y); y >= yFrom; y--) {
+      let inked = false;
+      for (let x = x0; x <= x1 && !inked; x++) inked = clean.data[y * clean.w + x] === 1;
+      if (!inked) break;
+      y0 = y;
+    }
+    for (let y = Math.round(head.y); y <= yTo; y++) {
+      let inked = false;
+      for (let x = x0; x <= x1 && !inked; x++) inked = clean.data[y * clean.w + x] === 1;
+      if (!inked) break;
+      y1 = y;
+    }
+    if (y0 < 0 || y1 < 0) continue;
+    const h = y1 - y0 + 1;
+    // Engraving fixes these proportions: every accidental is between about two
+    // and three staff spaces tall and much taller than it is wide. A beam, a
+    // notehead and a time signature all fail that on shape alone, which is a
+    // cheaper and steadier test than trying to recognise each of them.
+    if (h < sp * 1.9 || h > sp * 3.5 || h < w * 1.8) continue;
+
+    const g: Glyph = { x0, x1, y0, y1 };
+    // A notehead sitting in the box is a notehead, whatever it looks like.
+    if (heads.some((n) => n.x >= x0 - sp * 0.5 && n.x <= x1 + sp * 0.5 && n.y >= y0 && n.y <= y1))
+      continue;
+    // An accidental names the note it stands beside, so it is centred on it.
+    if (Math.abs(inkCentre(clean, g) - head.y) > sp * 0.8) continue;
+
+    let filled = 0;
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) filled += clean.data[y * clean.w + x];
+    const density = filled / (w * h);
+    if (density < 0.14 || density > 0.72) continue;
+
+    return accidentalShape(clean, g);
+  }
+  return null;
 }
 
 /** Default clef by where a staff sits in its system. */
@@ -634,6 +796,7 @@ export function readPage(image: ImageData, pageIndex: number): PageReading {
       const s = raw[staffIndex];
       const id = `p${pageIndex}s${staffIndex}`;
       const clef = guessClef(positionInSystem, system.length);
+      const key = readKeySignature(clean, s, clef);
       staves.push({
         id,
         page: pageIndex,
@@ -647,10 +810,11 @@ export function readPage(image: ImageData, pageIndex: number): PageReading {
         left: s.left,
         right: s.right,
         clef,
-        sharps: readKeySignature(clean, s, clef),
+        sharps: key.sharps,
       });
 
-      findHeads(clean, s).forEach((h, i) => {
+      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6);
+      heads.forEach((h, i) => {
         notes.push({
           id: `${id}n${i}`,
           page: pageIndex,
@@ -659,6 +823,7 @@ export function readPage(image: ImageData, pageIndex: number): PageReading {
           y: h.y,
           step: h.step,
           filled: h.filled,
+          accidental: readAccidental(clean, s, h, heads),
         });
       });
     });
