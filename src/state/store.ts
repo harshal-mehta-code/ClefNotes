@@ -120,6 +120,7 @@ interface AppState {
   moveSelection: (delta: number) => void;
   applyEdit: (fn: (score: Score, target: EditTarget) => EditResult) => Promise<void>;
   transposePartWritten: (partIndex: number, semitones: number) => Promise<void>;
+  applyScoreEdit: (fn: (musicXml: string) => EditResult) => Promise<void>;
   undoEdit: () => Promise<void>;
 
   refreshLibrary: () => Promise<void>;
@@ -603,6 +604,36 @@ export const useApp = create<AppState>((set, get) => ({
         loading: false,
         loadingLabel: '',
         editStatus: e instanceof Error ? e.message : 'That part could not be transposed.',
+      });
+    }
+  },
+
+  /** A whole-score edit — key, time signature — with re-engraving and undo. */
+  applyScoreEdit: async (fn) => {
+    const { score } = get();
+    if (!score) return;
+    const previous = score.musicXml;
+    set({ loading: true, loadingLabel: 'Applying…' });
+    try {
+      const result = fn(score.musicXml);
+      const { svg, score: rebuilt } = await engrave(result.musicXml, get().engraveOpts);
+      const full: Score = { ...rebuilt, id: score.id, source: score.source };
+      engine.setScore(full, get().mixes);
+      engine.patch({ bpm: get().transport.bpm, loopEndQ: full.totalQ });
+      set({
+        score: full,
+        svg,
+        loading: false,
+        loadingLabel: '',
+        editStatus: result.description,
+        undoStack: [...get().undoStack.slice(-24), previous],
+      });
+      await db.scores.update(score.id, { musicXml: result.musicXml });
+    } catch (e) {
+      set({
+        loading: false,
+        loadingLabel: '',
+        editStatus: e instanceof Error ? e.message : 'That change could not be applied.',
       });
     }
   },

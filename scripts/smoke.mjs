@@ -100,10 +100,51 @@ const audio = await page.evaluate(async () => {
 });
 check('live playback produces audible signal', audio.ok, `peak ${audio.peak?.toFixed(4)} · ctx ${audio.state}`);
 
-await page.locator('aside button[title="Mute this part"]').first().click();
+await page.locator('aside button:has-text("Mute")').first().click();
 await page.waitForTimeout(400);
 check('muting a part fades its staves', (await page.locator('.score-host g.staff.cn-muted').count()) > 0);
-await page.locator('aside button[title="Mute this part"]').first().click();
+await page.locator('aside button:has-text("Mute")').first().click();
+
+// Isolation, measured in audio rather than in CSS. The staves fading is not
+// evidence that a part stopped sounding, and hearing one line on its own is
+// the whole reason this app exists.
+const settleLevel = async (settle = 2600, ms = 1400) =>
+  await page.evaluate(
+    async ([st, d]) => {
+      const e = window.__engine;
+      e.createMeter();
+      await new Promise((r) => setTimeout(r, st));
+      let pk = 0;
+      const t = performance.now();
+      while (performance.now() - t < d) {
+        pk = Math.max(pk, e.outputLevel());
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      return pk;
+    },
+    [settle, ms],
+  );
+
+const fullLevel = await settleLevel();
+await page.locator('aside button:has-text("Only")').nth(1).click();
+const soloLevel = await settleLevel();
+check(
+  'solo actually isolates one part',
+  soloLevel > 0.01 && soloLevel < fullLevel * 0.92,
+  `all ${fullLevel.toFixed(3)} → solo ${soloLevel.toFixed(3)}`,
+);
+await page.locator('aside button:has-text("Only")').nth(1).click();
+
+await page.evaluate(() => {
+  const s = window.__cn.getState();
+  s.setAllMixes(s.mixes.map((m) => ({ ...m, muted: true, solo: false })));
+});
+const silentLevel = await settleLevel(3200);
+check('muting every part gives real silence', silentLevel < 0.005, `peak ${silentLevel.toFixed(4)}`);
+await page.evaluate(() => {
+  const s = window.__cn.getState();
+  s.setAllMixes(s.mixes.map((m) => ({ ...m, muted: false, solo: false })));
+});
 
 await page.locator('button:has-text("Pause")').first().click();
 
@@ -200,6 +241,8 @@ const concert = await page.evaluate(() => {
   const s = window.__cn.getState();
   return { midi: s.score.notes.find((n) => n.part === 0).midi, mix: s.mixes[0].transpose };
 });
+await page.locator('aside button[aria-expanded]').first().click();
+await page.waitForTimeout(300);
 await page.locator('aside select[aria-label^="Transposing instrument"]').first().selectOption('2');
 await page.waitForTimeout(4000);
 const transposed = await page.evaluate(() => {

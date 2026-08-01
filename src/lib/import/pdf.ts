@@ -28,6 +28,13 @@ async function pdfjs() {
 
 const XML_SNIFF = /<score-partwise|<score-timewise|<mei\b/i;
 
+/**
+ * Recognition is slow and memory-hungry, and accuracy does not improve with
+ * length. Twelve pages covers most single movements; beyond that the import
+ * says what it skipped rather than grinding a phone to a halt.
+ */
+const MAX_OMR_PAGES = 12;
+
 /** Tier 1: pull an embedded MusicXML attachment out of the PDF. */
 async function extractEmbedded(doc: {
   getAttachments(): Promise<Record<string, { filename: string; content: Uint8Array }> | null>;
@@ -66,53 +73,52 @@ async function extractEmbedded(doc: {
 }
 
 export interface RasterPage {
-  image: ImageData;
-  /** A data URL of the page, shown next to the recognised result. */
+  /** A small JPEG of the page, shown next to the recognised result. */
   preview: string;
   width: number;
   height: number;
 }
 
-/** Rasterise pages at a resolution high enough for the OMR to measure staves. */
-export async function rasterise(
-  file: File,
-  onProgress?: (label: string) => void,
-  maxPages = 8,
-): Promise<RasterPage[]> {
-  const lib = await pdfjs();
-  const buf = await file.arrayBuffer();
-  const doc = await lib.getDocument({ data: buf }).promise;
-  const pages: RasterPage[] = [];
-  const count = Math.min(doc.numPages, maxPages);
+type PdfDoc = Awaited<ReturnType<typeof import('pdfjs-dist').getDocument>['promise']>;
 
-  for (let i = 1; i <= count; i++) {
-    onProgress?.(`Rendering page ${i} of ${count}…`);
-    const page = await doc.getPage(i);
-    // Staff spacing in pixels is the unit every OMR measurement is expressed
-    // in, so resolution directly limits how well shapes can be told apart.
-    // ~2400px across a page puts a typical staff space at 20px or more, which
-    // is where notehead-versus-letter discrimination starts working.
-    const base = page.getViewport({ scale: 1 });
-    const scale = Math.min(4.5, Math.max(1.8, 2400 / base.width));
-    const viewport = page.getViewport({ scale });
+/**
+ * Render one page.
+ *
+ * Staff spacing in pixels is the unit every OMR measurement is expressed in, so
+ * resolution directly limits how well shapes can be told apart. ~2400px across
+ * a page puts a typical staff space above 15px, which is where notehead
+ * detection starts working.
+ *
+ * Each page is ~30 MB of ImageData. They are produced on demand and released
+ * before the next one, because holding a seven-page score in memory at once is
+ * a couple of hundred megabytes — enough for a phone to kill the tab, which is
+ * exactly what "nothing happens on my phone" looks like.
+ */
+async function renderPage(
+  doc: PdfDoc,
+  index: number,
+): Promise<{ image: ImageData; preview: string; width: number; height: number } | null> {
+  const page = await doc.getPage(index + 1);
+  const base = page.getViewport({ scale: 1 });
+  const scale = Math.min(4.5, Math.max(1.8, 2400 / base.width));
+  const viewport = page.getViewport({ scale });
 
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.ceil(viewport.width);
-    canvas.height = Math.ceil(viewport.height);
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) continue;
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvasContext: ctx, viewport }).promise;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport }).promise;
 
-    pages.push({
-      image: ctx.getImageData(0, 0, canvas.width, canvas.height),
-      preview: canvas.toDataURL('image/jpeg', 0.72),
-      width: canvas.width,
-      height: canvas.height,
-    });
-  }
-  return pages;
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const preview = canvas.toDataURL('image/jpeg', 0.6);
+  // Let the canvas go immediately rather than waiting on the collector.
+  canvas.width = 0;
+  canvas.height = 0;
+  page.cleanup();
+  return { image, preview, width: viewport.width, height: viewport.height };
 }
 
 export interface PdfImportResult extends ImportResult {
@@ -141,24 +147,34 @@ export async function importPdf(
     };
   }
 
-  onProgress?.('No embedded score. Rendering pages for recognition…');
-  const pages = await rasterise(file, onProgress);
-  if (!pages.length) throw new Error('That PDF has no pages ClefNotes could render.');
+  onProgress?.('No embedded score inside. Reading the pages…');
+  const count = Math.min(doc.numPages, MAX_OMR_PAGES);
+  if (!count) throw new Error('That PDF has no pages ClefNotes could render.');
 
+  const previews: RasterPage[] = [];
   const { recognise } = await import('./omr');
   const result = await recognise(
-    pages.map((p) => p.image),
+    count,
+    async (i) => {
+      onProgress?.(`Reading page ${i + 1} of ${count}…`);
+      const rendered = await renderPage(doc, i);
+      if (!rendered) throw new Error(`Page ${i + 1} could not be rendered.`);
+      previews.push({ preview: rendered.preview, width: rendered.width, height: rendered.height });
+      return rendered.image;
+    },
     { onProgress: (label) => onProgress?.(label) },
   );
 
+  const truncated = doc.numPages > count;
   return {
     musicXml: result.musicXml,
     source: 'omr',
-    pages,
+    pages: previews,
     confidence: result.confidence,
-    note: `Recognised ${result.noteCount} notes across ${result.staffCount} part${
-      result.staffCount === 1 ? '' : 's'
-    }. Check it against the original before you trust it — recognition is never perfect.`,
+    note:
+      `Read ${result.noteCount} notes across ${result.staffCount} part${result.staffCount === 1 ? '' : 's'}` +
+      (truncated ? `, from the first ${count} of ${doc.numPages} pages` : '') +
+      `. Check it against the original — recognition is a draft, not a transcription.`,
   };
 }
 

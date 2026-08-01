@@ -194,20 +194,24 @@
     @apply bg-panel border border-rule2;
   }
 
-  /* Solo / mute — square, tactile, unmistakable when engaged. */
-  .mini-btn {
-    @apply font-mono w-7 h-7 shrink-0 grid place-items-center border-[1.5px] border-rule2
-           bg-panel2 text-ink3 cursor-pointer rounded-sm;
+  /* Part controls. Words, not initials, and a touch target that a thumb can
+     actually hit — "S" and "M" in 28px squares is how solo goes undiscovered. */
+  .part-btn {
+    @apply font-mono uppercase shrink-0 grid place-items-center border-[1.5px] border-rule2
+           bg-panel2 text-ink2 cursor-pointer rounded-sm select-none;
+    min-width: 44px;
+    min-height: 38px;
+    padding: 0 8px;
     font-size: 10px;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
   }
-  .mini-btn:hover {
+  .part-btn:hover {
     @apply border-ink text-ink;
   }
-  .mini-btn.is-solo {
+  .part-btn.is-on {
     @apply bg-riso-blue text-white border-riso-blue;
   }
-  .mini-btn.is-mute {
+  .part-btn.is-off {
     @apply bg-crit text-white border-crit;
   }
   .field {

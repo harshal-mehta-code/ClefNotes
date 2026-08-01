@@ -56,12 +56,28 @@ run offline and ship inside a static site: Otsu threshold → horizontal
 projection for staff lines → staff-line removal → shape-tested notehead
 detection → stem/beam analysis for durations → barlines.
 
-**It is genuinely beta.** On a clean, printed, un-skewed score it recovers most
-of the notes; on the test score used during development it found 59 of 84. It
-will not read handwriting, and a skewed or faint scan will defeat it. Treat its
-output as a draft to check against the page, which is why the import screen
-shows the original alongside. Clef, key and time signature are not detected —
-it assumes treble/bass by staff position, C major and 4/4.
+Pages are rendered and recognised **one at a time** and released before the
+next: a page at this resolution is ~30 MB of pixels, and holding a seven-page
+score in memory at once is enough for a phone to kill the tab.
+
+Staves are grouped into systems by looking for the barline running through the
+gap between them, not by measuring the gap. On real choral music the space
+within a system and the space between systems are near enough identical, and
+the gap heuristic collapsed a two-part score into four.
+
+**It is genuinely beta, and the ceiling is low on dense music.** On a clean
+printed score it finds the right number of staves, the right number of parts,
+and most of the noteheads. It does not read:
+
+- **key signatures** — so the Studio asks you, in one tap, rather than guessing;
+  a wrong key silently mis-pitches every note of that letter
+- **ties and slurs** — a tied note arrives as two notes
+- **two voices sharing a staff** — they merge, and the rhythm goes with them
+- **dynamics, articulation, repeats**
+
+On a barbershop or piano-vocal chart, expect a sketch to correct rather than a
+transcription. If the publisher offers MusicXML, take it — that route is exact
+and takes one step.
 
 ---
 
@@ -152,7 +168,7 @@ npm install
 npm run dev          # development
 npm run build        # production build into dist/
 npm run preview      # serve the build
-npm run smoke        # 26 end-to-end browser checks against the preview
+npm run smoke        # 28 end-to-end browser checks against the preview
 ```
 
 ### Deploying

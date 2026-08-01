@@ -228,6 +228,71 @@ export function transposePart(score: Score, partIndex: number, semitones: number
   };
 }
 
+export const KEY_CHOICES: Array<{ fifths: number; label: string }> = [
+  { fifths: -7, label: 'C♭ major / A♭ minor' },
+  { fifths: -6, label: 'G♭ major / E♭ minor' },
+  { fifths: -5, label: 'D♭ major / B♭ minor' },
+  { fifths: -4, label: 'A♭ major / F minor' },
+  { fifths: -3, label: 'E♭ major / C minor' },
+  { fifths: -2, label: 'B♭ major / G minor' },
+  { fifths: -1, label: 'F major / D minor' },
+  { fifths: 0, label: 'C major / A minor' },
+  { fifths: 1, label: 'G major / E minor' },
+  { fifths: 2, label: 'D major / B minor' },
+  { fifths: 3, label: 'A major / F♯ minor' },
+  { fifths: 4, label: 'E major / C♯ minor' },
+  { fifths: 5, label: 'B major / G♯ minor' },
+  { fifths: 6, label: 'F♯ major / D♯ minor' },
+  { fifths: 7, label: 'C♯ major / A♯ minor' },
+];
+
+/**
+ * Set the key signature on every part.
+ *
+ * Recognition cannot read a key signature reliably, and guessing one is worse
+ * than leaving it alone: a wrong key silently mis-pitches every note of that
+ * letter for the whole piece. So the user says what the key is, and this
+ * applies it. Verovio resolves accidentals from the signature, so setting it
+ * corrects the printed notes *and* what they sound like, in one step.
+ */
+export function setKeySignature(musicXml: string, fifths: number): EditResult {
+  const doc = parseXml(musicXml);
+  let changed = 0;
+  for (const key of Array.from(doc.querySelectorAll('attributes > key'))) {
+    let el = key.querySelector('fifths');
+    if (!el) {
+      el = doc.createElement('fifths');
+      key.insertBefore(el, key.firstChild);
+    }
+    el.textContent = String(fifths);
+    changed++;
+  }
+  if (!changed) {
+    // No key element at all: add one to each part's first attributes block.
+    for (const attrs of Array.from(doc.querySelectorAll('part > measure > attributes'))) {
+      const key = doc.createElement('key');
+      const el = doc.createElement('fifths');
+      el.textContent = String(fifths);
+      key.appendChild(el);
+      attrs.insertBefore(key, attrs.querySelector('time') ?? attrs.querySelector('clef'));
+    }
+  }
+  const label = KEY_CHOICES.find((k) => k.fifths === fifths)?.label ?? `${fifths}`;
+  return { musicXml: serialise(doc), description: `key set to ${label}` };
+}
+
+/** Set the time signature on every part. */
+export function setTimeSignature(musicXml: string, beats: number, beatType: number): EditResult {
+  const doc = parseXml(musicXml);
+  for (const time of Array.from(doc.querySelectorAll('attributes > time'))) {
+    const b = time.querySelector('beats');
+    const t = time.querySelector('beat-type');
+    if (b) b.textContent = String(beats);
+    if (t) t.textContent = String(beatType);
+  }
+  return { musicXml: serialise(doc), description: `${beats}/${beatType}` };
+}
+
 const NAMES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
 function nameOf(midi: number): string {
   return `${NAMES[((midi % 12) + 12) % 12]}${Math.floor(midi / 12) - 1}`;

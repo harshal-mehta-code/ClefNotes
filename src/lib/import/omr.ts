@@ -448,6 +448,63 @@ export function readDurations(clean: Bitmap, heads: Head[], staves: Staff[]): He
   return survivors;
 }
 
+// --- 5b. grouping staves into systems --------------------------------------
+
+/**
+ * Are two adjacent staves braced into one system?
+ *
+ * Judging this by the size of the gap fails on real music: in a two-stave
+ * choral score the space between the staves of a system and the space between
+ * systems are near enough identical, so everything collapses into one group.
+ *
+ * The reliable signal is physical. Staves in the same system are joined by a
+ * barline running straight through the gap between them; staves in different
+ * systems have nothing but paper there. So look for the ink.
+ */
+function sameSystem(clean: Bitmap, upper: Staff, lower: Staff): boolean {
+  const top = Math.round(upper.bottom) + 1;
+  const bottom = Math.round(lower.top) - 1;
+  if (bottom <= top) return true;
+  const height = bottom - top;
+
+  // The system's opening barline sits at the left edge of the staff lines.
+  // Check a few columns either side to allow for a pixel or two of drift.
+  const sp = upper.spacing;
+  const candidates: number[] = [];
+  for (let dx = -2; dx <= 2; dx++) candidates.push(Math.round(upper.left) + dx);
+  // A brace sits just left of the barline on braced systems.
+  for (let dx = 3; dx <= Math.round(sp * 1.2); dx++) candidates.push(Math.round(upper.left) - dx);
+
+  for (const x of candidates) {
+    if (x < 0 || x >= clean.w) continue;
+    let filled = 0;
+    for (let y = top; y <= bottom; y++) {
+      if (clean.data[y * clean.w + x]) filled++;
+    }
+    if (filled >= height * 0.8) return true;
+  }
+  return false;
+}
+
+/** Partition staves top-to-bottom into systems. */
+export function groupSystems(clean: Bitmap, staves: Staff[]): number[][] {
+  const groups: number[][] = [];
+  let current: number[] = [];
+  for (let i = 0; i < staves.length; i++) {
+    if (!current.length) {
+      current.push(i);
+      continue;
+    }
+    if (sameSystem(clean, staves[current[current.length - 1]], staves[i])) current.push(i);
+    else {
+      groups.push(current);
+      current = [i];
+    }
+  }
+  if (current.length) groups.push(current);
+  return groups;
+}
+
 // --- 6. barlines -----------------------------------------------------------
 
 export function findBarlines(clean: Bitmap, staff: Staff): number[] {
@@ -510,6 +567,8 @@ export interface OmrResult {
   confidence: number;
   staffCount: number;
   noteCount: number;
+  /** Key signature as read from the page, in sharps (negative for flats). */
+  fifths: number;
 }
 
 /**
@@ -518,19 +577,28 @@ export interface OmrResult {
  * Staves are matched into parts by their position within each system, which is
  * the same assumption a human makes reading down a page.
  */
-export async function recognise(pages: ImageData[], opts: OmrOptions = {}): Promise<OmrResult> {
+export async function recognise(
+  pageCount: number,
+  getPage: (index: number) => Promise<ImageData>,
+  opts: OmrOptions = {},
+): Promise<OmrResult> {
   const perStaffTokens: string[][] = [];
   const pageResults: OmrPageResult[] = [];
   let stavesPerSystem = 0;
   let totalNotes = 0;
   let totalConfidence = 0;
 
-  for (let p = 0; p < pages.length; p++) {
-    opts.onProgress?.(`Reading page ${p + 1} of ${pages.length}…`, p / pages.length);
-    // Yield so the progress bar can actually paint.
+  for (let p = 0; p < pageCount; p++) {
+    opts.onProgress?.(`Reading page ${p + 1} of ${pageCount}…`, p / pageCount);
+    // Yield so the progress label can actually paint.
     await new Promise((r) => setTimeout(r, 0));
 
-    const bm = toBitmap(pages[p]);
+    // One page is rasterised at a time and released before the next. A page at
+    // this resolution is ~30 MB of ImageData; holding a whole seven-page score
+    // at once is a couple of hundred megabytes, which a phone will simply kill.
+    const image = await getPage(p);
+    const bm = toBitmap(image);
+
     const staves = findStaves(bm);
     if (!staves.length) {
       pageResults.push({ staves: 0, notes: 0, confidence: 0 });
@@ -539,51 +607,48 @@ export async function recognise(pages: ImageData[], opts: OmrOptions = {}): Prom
 
     const clean = removeStaffLines(bm, staves);
     const heads = readDurations(clean, findHeads(clean, staves), staves);
+    const systems = groupSystems(clean, staves);
 
-    // How many staves are braced together into one system? Staves that are
-    // closer together than a system gap belong to the same system.
+    // The first page with music establishes how many staves a system has, and
+    // therefore how many parts the score is in.
     if (!stavesPerSystem) {
-      const gaps: number[] = [];
-      for (let i = 1; i < staves.length; i++) gaps.push(staves[i].top - staves[i - 1].bottom);
-      if (gaps.length) {
-        const sorted = [...gaps].sort((a, b) => a - b);
-        const median = sorted[Math.floor(sorted.length / 2)];
-        let count = 1;
-        for (const g of gaps) {
-          if (g <= median * 1.5) count++;
-          else break;
+      const sizes = systems.map((s) => s.length).filter((n) => n > 0);
+      // Use the most common system size — a first system indented for part
+      // names, or a short final system, should not set the shape of the score.
+      const tally = new Map<number, number>();
+      for (const n of sizes) tally.set(n, (tally.get(n) ?? 0) + 1);
+      let best = 1;
+      let bestCount = 0;
+      for (const [n, c] of tally) {
+        if (c > bestCount || (c === bestCount && n > best)) {
+          best = n;
+          bestCount = c;
         }
-        stavesPerSystem = Math.max(1, Math.min(count, 4));
-      } else {
-        stavesPerSystem = 1;
       }
+      stavesPerSystem = Math.max(1, Math.min(best, 8));
     }
 
-    staves.forEach((staff, si) => {
-      const partIndex = si % stavesPerSystem;
-      if (!perStaffTokens[partIndex]) perStaffTokens[partIndex] = [];
-      const clef = opts.clefs?.[partIndex] ?? (partIndex === stavesPerSystem - 1 && stavesPerSystem > 1 ? 'F4' : 'G2');
+    // Position within its own system is what makes a staff part 1, 2, 3…
+    for (const system of systems) {
+      system.forEach((staffIndex, positionInSystem) => {
+        const partIndex = positionInSystem % stavesPerSystem;
+        if (!perStaffTokens[partIndex]) perStaffTokens[partIndex] = [];
+        const clef =
+          opts.clefs?.[partIndex] ??
+          (partIndex === stavesPerSystem - 1 && stavesPerSystem > 1 ? 'F4' : 'G2');
 
-      const mine = heads.filter((hd) => hd.staff === si).sort((a, b) => a.x - b.x);
-      const bars = findBarlines(clean, staff);
-
-      let barCursor = 0;
-      for (const head of mine) {
-        // Emit a barline hint when we cross one; the builder re-bars anyway,
-        // but this keeps notes from drifting between measures.
-        while (barCursor < bars.length && bars[barCursor] < head.x) {
-          perStaffTokens[partIndex].push('|');
-          barCursor++;
+        const mine = heads.filter((hd) => hd.staff === staffIndex).sort((a, b) => a.x - b.x);
+        for (const head of mine) {
+          perStaffTokens[partIndex].push(`${spell(head.step, clef)}:${durToken(head.qDur)}`);
         }
-        perStaffTokens[partIndex].push(`${spell(head.step, clef)}:${durToken(head.qDur)}`);
-      }
-      totalNotes += mine.length;
-    });
+        totalNotes += mine.length;
+      });
+    }
 
-    // Confidence: a page where every staff found notes and the head count per
-    // bar looks sane is one we mostly believe.
+    // Confidence: a page where every staff found a plausible number of notes
+    // is one we mostly believe.
     const notesPerStaff = heads.length / staves.length;
-    const conf = Math.max(0, Math.min(1, notesPerStaff / 12)) * (staves.length >= 1 ? 1 : 0);
+    const conf = Math.max(0, Math.min(1, notesPerStaff / 12));
     totalConfidence += conf;
     pageResults.push({ staves: staves.length, notes: heads.length, confidence: conf });
   }
@@ -616,8 +681,9 @@ export async function recognise(pages: ImageData[], opts: OmrOptions = {}): Prom
   return {
     musicXml: buildMusicXml(spec),
     pages: pageResults,
-    confidence: pages.length ? totalConfidence / pages.length : 0,
+    confidence: pageCount ? totalConfidence / pageCount : 0,
     staffCount: parts.length,
     noteCount: totalNotes,
+    fifths: opts.fifths ?? 0,
   };
 }

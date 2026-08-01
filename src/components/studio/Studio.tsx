@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useApp } from '../../state/store';
 import ScoreView from './ScoreView';
 import PianoRoll from './PianoRoll';
@@ -8,6 +8,7 @@ import Karaoke from './Karaoke';
 import ExportMenu from './ExportMenu';
 import Keyboard from './Keyboard';
 import NoteEditor from './NoteEditor';
+import RecognitionBar from './RecognitionBar';
 import ShareButton from './ShareButton';
 import { Chip } from '../ui/primitives';
 
@@ -26,12 +27,19 @@ export default function Studio() {
   const setEditing = useApp((s) => s.setEditing);
   const simpleMode = useApp((s) => s.simpleMode);
   const setSimpleMode = useApp((s) => s.setSimpleMode);
+  const mixes = useApp((s) => s.mixes);
+  const soloOnly = useApp((s) => s.soloOnly);
+  const setAllMixes = useApp((s) => s.setAllMixes);
+
+  const soloName = score?.parts.find((_, i) => mixes[i]?.solo)?.name ?? null;
+  const mutedNames = (score?.parts ?? []).filter((_, i) => mixes[i]?.muted).map((p) => p.abbrev);
   // The mixer is a permanent column on a desktop and an on-demand sheet on a
   // phone, so it starts closed only where it would cover the music.
   const [showMixer, setShowMixer] = useState(() =>
     typeof window === 'undefined' ? true : window.innerWidth >= 768,
   );
   const [showKeys, setShowKeys] = useState(true);
+  const isNarrow = useIsNarrow();
 
   /**
    * Performance mode: everything but the music gets out of the way, the
@@ -84,6 +92,29 @@ export default function Studio() {
             {score.composer} · {score.parts.length} parts · {score.measureCount} bars
           </div>
         </div>
+
+        {/* Isolation is the app's whole point, so when it is on it says so —
+            and can be undone — from anywhere in the Studio. */}
+        {soloName && (
+          <button
+            className="btn shrink-0"
+            style={{ background: 'rgb(var(--blue))', color: '#fff', borderColor: 'rgb(var(--ink))' }}
+            onClick={() => soloOnly(null)}
+            title="Hear every part again"
+          >
+            Only: {soloName} ✕
+          </button>
+        )}
+        {mutedNames.length > 0 && !soloName && (
+          <button
+            className="btn shrink-0"
+            style={{ background: 'rgb(var(--crit))', color: '#fff', borderColor: 'rgb(var(--ink))' }}
+            onClick={() => setAllMixes(mixes.map((m) => ({ ...m, muted: false })))}
+            title="Bring the muted parts back"
+          >
+            Muted: {mutedNames.join(', ')} ✕
+          </button>
+        )}
 
         {/* Simple mode carries the four things a first-timer needs. Everything
             else is one tap away rather than in their face on arrival. */}
@@ -197,43 +228,62 @@ export default function Studio() {
               <Keyboard height={84} />
             </div>
           )}
+          <RecognitionBar />
           <NoteEditor />
           <Karaoke />
           <Transport />
         </div>
 
-        {/* Desktop: a fixed column. */}
-        {showMixer && (
-          <aside className="hidden w-[286px] shrink-0 border-l-[1.5px] border-ink bg-panel md:block">
+        {/* Desktop: a fixed column beside the music. */}
+        {showMixer && !isNarrow && (
+          <aside className="w-[286px] shrink-0 border-l-[1.5px] border-ink bg-panel">
             <Mixer />
           </aside>
         )}
       </div>
 
-      {/* Phone: the same mixer as a sheet, because per-part control is the
-          whole point of the app and hiding it on mobile would gut it. */}
-      {showMixer && (
-        <div className="md:hidden">
+      {/* Phone: the same panel as a sheet — per-part control is the whole point
+          of the app, so it cannot just disappear on a small screen. Rendered
+          here *instead of* the column, never as well: two copies would put two
+          of every button in the page for a screen reader to find. */}
+      {showMixer && isNarrow && (
+        <>
           <div
             className="fixed inset-0 z-[380] bg-[rgb(var(--sunk))]/70"
             onClick={() => setShowMixer(false)}
             aria-hidden
           />
           <aside
-            className="fixed inset-x-0 bottom-0 z-[390] max-h-[72vh] overflow-y-auto border-t-[1.5px] border-ink bg-panel"
+            className="fixed inset-x-0 bottom-0 z-[390] flex max-h-[74vh] flex-col border-t-[1.5px] border-ink bg-panel"
             role="dialog"
-            aria-label="Part mixer"
+            aria-label="Parts and sound"
           >
-            <div className="sticky top-0 flex items-center gap-2 border-b border-rule bg-panel px-3 py-2">
+            <div className="flex shrink-0 items-center gap-2 border-b border-rule px-3 py-2">
               <span className="lbl">Parts &amp; sound</span>
               <button className="btn btn-ghost ml-auto" onClick={() => setShowMixer(false)}>
                 Close
               </button>
             </div>
-            <Mixer />
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <Mixer />
+            </div>
           </aside>
-        </div>
+        </>
       )}
     </div>
   );
+}
+
+/** Tracks the one breakpoint that changes the Studio's shape. */
+function useIsNarrow(): boolean {
+  const [narrow, setNarrow] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)');
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return narrow;
 }

@@ -1,17 +1,23 @@
+import { useState } from 'react';
 import { useApp } from '../../state/store';
 import { inkVar, midiName } from '../../lib/score/types';
 import { instrumentsByFamily, SOUND_PACKS } from '../../lib/audio/instruments';
 import { VOICE_PRESETS } from '../../lib/audio/clefvox';
-import { Chip, Label } from '../ui/primitives';
+import { Label } from '../ui/primitives';
 
 /**
- * Written transpositions.
+ * Parts.
  *
- * A B♭ trumpeter reads a whole tone above concert pitch. Choosing an instrument
- * here rewrites the notation to what that player actually reads, and shifts the
- * playback back the other way — so you read your own part and still hear the
- * piece in the key the rest of the ensemble is in.
+ * This panel is the reason the app exists — hearing one line on its own is the
+ * thing a printed score cannot do. So each part gets one row with the three
+ * controls that matter, named in words: which instrument it plays, "Only" to
+ * isolate it, and "Mute" to take it out.
+ *
+ * Everything else — volume, pan, octave, transposing instrument — is real but
+ * secondary, and lives behind the row's expander. Eight controls per part is
+ * how you end up with a musician who cannot find solo.
  */
+
 const TRANSPOSING = [
   { label: 'Concert pitch', semitones: 0 },
   { label: 'B♭ (trumpet, clarinet, tenor sax)', semitones: 2 },
@@ -26,52 +32,76 @@ export default function Mixer() {
   const mixes = useApp((s) => s.mixes);
   const setMix = useApp((s) => s.setMix);
   const soloOnly = useApp((s) => s.soloOnly);
-  const minusOne = useApp((s) => s.minusOne);
   const applySoundPack = useApp((s) => s.applySoundPack);
   const packId = useApp((s) => s.packId);
   const transport = useApp((s) => s.transport);
   const patch = useApp((s) => s.patchTransport);
   const writtenTranspose = useApp((s) => s.writtenTranspose);
   const transposePartWritten = useApp((s) => s.transposePartWritten);
+  const simpleMode = useApp((s) => s.simpleMode);
+
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [showScoreOpts, setShowScoreOpts] = useState(false);
 
   if (!score) return null;
   const anySolo = mixes.some((m) => m.solo);
   const families = instrumentsByFamily();
 
   return (
-    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
+    <div className="flex h-full flex-col gap-4 overflow-y-auto p-3">
+      {/* One control, not ten chips. */}
       <section>
-        <Label className="mb-2">Sound pack</Label>
-        <div className="flex flex-wrap gap-1.5">
+        <Label className="mb-1.5">Sound</Label>
+        <select
+          className="field w-full"
+          value={packId}
+          onChange={(e) => {
+            const pack = SOUND_PACKS.find((p) => p.id === e.target.value);
+            if (pack) applySoundPack(pack);
+          }}
+          aria-label="Sound pack for the whole score"
+        >
           {SOUND_PACKS.map((p) => (
-            <Chip key={p.id} on={packId === p.id} onClick={() => applySoundPack(p)} title={p.blurb}>
-              {p.name}
-            </Chip>
+            <option key={p.id} value={p.id}>
+              {p.name} — {p.blurb}
+            </option>
           ))}
-        </div>
+        </select>
       </section>
 
       <section>
-        <div className="mb-2 flex items-center gap-2">
+        <div className="mb-1.5 flex items-center gap-2">
           <Label>Parts · {score.parts.length}</Label>
           {anySolo && (
-            <button className="lbl ml-auto underline decoration-riso-pink" onClick={() => soloOnly(null)}>
-              clear solo
+            <button
+              className="lbl ml-auto underline decoration-riso-pink decoration-2"
+              onClick={() => soloOnly(null)}
+            >
+              hear all again
             </button>
           )}
         </div>
 
-        <div className="flex flex-col">
+        <div className="flex flex-col gap-1.5">
           {score.parts.map((part, i) => {
             const mix = mixes[i];
             if (!mix) return null;
             const audible = anySolo ? mix.solo : !mix.muted;
+            const isOpen = expanded === i;
             return (
-              <div key={i} className="border-b border-rule py-2.5 last:border-b-0">
-                <div className="flex items-center gap-2">
-                  <span className="h-6 w-[5px] shrink-0" style={{ background: inkVar(i) }} />
+              <div
+                key={i}
+                className="border"
+                style={{
+                  borderColor: mix.solo ? inkVar(i) : 'rgb(var(--rule-2))',
+                  background: mix.solo ? 'rgb(var(--panel-2))' : 'transparent',
+                  opacity: audible ? 1 : 0.55,
+                }}
+              >
+                <div className="flex items-center gap-2 p-2">
+                  <span className="h-9 w-[5px] shrink-0" style={{ background: inkVar(i) }} />
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-display text-[13px] font-bold leading-tight tracking-tight">
+                    <div className="truncate font-display text-[14px] font-bold leading-tight tracking-tight">
                       {part.name}
                     </div>
                     <div className="lbl truncate">
@@ -79,25 +109,36 @@ export default function Mixer() {
                       {part.hasLyrics && ' · lyrics'}
                     </div>
                   </div>
+
                   <button
-                    className={`mini-btn ${mix.solo ? 'is-solo' : ''}`}
-                    onClick={() => setMix(i, { solo: !mix.solo })}
+                    className={`part-btn ${mix.solo ? 'is-on' : ''}`}
+                    onClick={() => (mix.solo ? soloOnly(null) : soloOnly(i))}
                     aria-pressed={mix.solo}
-                    title="Solo this part"
+                    title={`Hear ${part.name} on its own`}
                   >
-                    S
+                    Only
                   </button>
                   <button
-                    className={`mini-btn ${mix.muted ? 'is-mute' : ''}`}
-                    onClick={() => setMix(i, { muted: !mix.muted })}
+                    className={`part-btn ${mix.muted && !anySolo ? 'is-off' : ''}`}
+                    onClick={() => setMix(i, { muted: !mix.muted, solo: false })}
                     aria-pressed={mix.muted}
-                    title="Mute this part"
+                    title={`Take ${part.name} out — play it yourself`}
                   >
-                    M
+                    Mute
+                  </button>
+                  <button
+                    className="part-btn"
+                    onClick={() => setExpanded(isOpen ? null : i)}
+                    aria-expanded={isOpen}
+                    title="Volume, pan, octave, transposing instrument"
+                  >
+                    {isOpen ? '×' : '⋯'}
                   </button>
                 </div>
 
-                <div className="mt-2 flex items-center gap-2">
+                {/* The instrument is on the row, not buried: it is the second
+                    thing anyone wants to change after pressing play. */}
+                <div className="flex items-center gap-2 px-2 pb-2">
                   <select
                     className="field min-w-0 flex-1"
                     value={mix.instrument}
@@ -130,141 +171,135 @@ export default function Mixer() {
                   )}
                 </div>
 
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="lbl w-6">VOL</span>
-                  <input
-                    type="range"
-                    className="rng flex-1"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={mix.volume}
-                    onChange={(e) => setMix(i, { volume: Number(e.target.value) })}
-                    aria-label={`Volume for ${part.name}`}
-                    style={{ opacity: audible ? 1 : 0.4 }}
-                  />
-                  <span className="num w-8 text-[10px] text-ink3">{Math.round(mix.volume * 100)}</span>
-                </div>
-                <div className="mt-1 flex items-center gap-2">
-                  <span className="lbl w-6">PAN</span>
-                  <input
-                    type="range"
-                    className="rng flex-1"
-                    min={-1}
-                    max={1}
-                    step={0.05}
-                    value={mix.pan}
-                    onChange={(e) => setMix(i, { pan: Number(e.target.value) })}
-                    aria-label={`Pan for ${part.name}`}
-                  />
-                  <span className="num w-8 text-[10px] text-ink3">
-                    {mix.pan === 0 ? 'C' : mix.pan < 0 ? `L${Math.round(-mix.pan * 9)}` : `R${Math.round(mix.pan * 9)}`}
-                  </span>
-                </div>
-
-                <div className="mt-2 flex items-center gap-2">
-                  <span className="lbl w-16">My instr.</span>
-                  <select
-                    className="field min-w-0 flex-1"
-                    value={writtenTranspose[i] ?? 0}
-                    onChange={(e) => void transposePartWritten(i, Number(e.target.value))}
-                    aria-label={`Transposing instrument for ${part.name}`}
-                    title="Rewrite this part for a transposing instrument — you read your part, everyone still hears concert pitch"
-                  >
-                    {TRANSPOSING.map((t) => (
-                      <option key={t.semitones} value={t.semitones}>
-                        {t.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  <Chip onClick={() => soloOnly(i)} title="Hear only this part">
-                    Learn this part
-                  </Chip>
-                  <Chip
-                    on={mix.muted && !anySolo}
-                    onClick={() => minusOne(i)}
-                    title="Mute this part and play it yourself over the ensemble"
-                  >
-                    Minus-one
-                  </Chip>
-                  <Chip
-                    onClick={() => setMix(i, { transpose: mix.transpose === 0 ? -12 : mix.transpose === -12 ? 12 : 0 })}
-                    on={mix.transpose !== 0}
-                    title="Shift this part by an octave"
-                  >
-                    {mix.transpose === 0 ? '8ve' : mix.transpose > 0 ? '+8ve' : '−8ve'}
-                  </Chip>
-                </div>
+                {isOpen && (
+                  <div className="border-t border-rule px-2 pb-2 pt-2">
+                    <div className="flex items-center gap-2 py-0.5">
+                      <span className="lbl w-9">Vol</span>
+                      <input
+                        type="range"
+                        className="rng flex-1"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={mix.volume}
+                        onChange={(e) => setMix(i, { volume: Number(e.target.value) })}
+                        aria-label={`Volume for ${part.name}`}
+                      />
+                      <span className="num w-8 text-[10px] text-ink3">{Math.round(mix.volume * 100)}</span>
+                    </div>
+                    <div className="flex items-center gap-2 py-0.5">
+                      <span className="lbl w-9">Pan</span>
+                      <input
+                        type="range"
+                        className="rng flex-1"
+                        min={-1}
+                        max={1}
+                        step={0.05}
+                        value={mix.pan}
+                        onChange={(e) => setMix(i, { pan: Number(e.target.value) })}
+                        aria-label={`Pan for ${part.name}`}
+                      />
+                      <span className="num w-8 text-[10px] text-ink3">
+                        {mix.pan === 0
+                          ? 'C'
+                          : mix.pan < 0
+                            ? `L${Math.round(-mix.pan * 9)}`
+                            : `R${Math.round(mix.pan * 9)}`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 py-0.5">
+                      <span className="lbl w-9">8ve</span>
+                      <input
+                        type="range"
+                        className="rng flex-1"
+                        min={-12}
+                        max={12}
+                        step={12}
+                        value={mix.transpose}
+                        onChange={(e) => setMix(i, { transpose: Number(e.target.value) })}
+                        aria-label={`Octave shift for ${part.name}`}
+                      />
+                      <span className="num w-8 text-[10px] text-ink3">
+                        {mix.transpose === 0 ? '0' : mix.transpose > 0 ? '+1' : '−1'}
+                      </span>
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <span className="lbl w-9">I play</span>
+                      <select
+                        className="field min-w-0 flex-1"
+                        value={writtenTranspose[i] ?? 0}
+                        onChange={(e) => void transposePartWritten(i, Number(e.target.value))}
+                        aria-label={`Transposing instrument for ${part.name}`}
+                        title="Rewrites this part to what you read; it still sounds in concert pitch"
+                      >
+                        {TRANSPOSING.map((t) => (
+                          <option key={t.semitones} value={t.semitones}>
+                            {t.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
+
+        <p className="lbl mt-2 leading-relaxed">
+          <b className="font-normal" style={{ color: 'rgb(var(--ink-2))' }}>
+            Only
+          </b>{' '}
+          hears one line on its own ·{' '}
+          <b className="font-normal" style={{ color: 'rgb(var(--ink-2))' }}>
+            Mute
+          </b>{' '}
+          drops your part so you can play it
+        </p>
       </section>
 
-      <section>
-        <Label className="mb-2">Score</Label>
-        <div className="flex items-center gap-2 py-1">
-          <span className="lbl w-16">Transpose</span>
-          <input
-            type="range"
-            className="rng flex-1"
-            min={-12}
-            max={12}
-            step={1}
-            value={transport.transpose}
-            onChange={(e) => patch({ transpose: Number(e.target.value) })}
-            aria-label="Transpose the whole score"
-          />
-          <span className="num w-8 text-[11px]">
-            {transport.transpose > 0 ? `+${transport.transpose}` : transport.transpose}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 py-1">
-          <span className="lbl w-16">Room</span>
-          <input
-            type="range"
-            className="rng flex-1"
-            min={0}
-            max={0.85}
-            step={0.01}
-            value={transport.reverb}
-            onChange={(e) => patch({ reverb: Number(e.target.value) })}
-            aria-label="Reverb amount"
-          />
-          <span className="num w-8 text-[11px]">{Math.round(transport.reverb * 100)}</span>
-        </div>
-        <div className="flex items-center gap-2 py-1">
-          <span className="lbl w-16">Swing</span>
-          <input
-            type="range"
-            className="rng flex-1"
-            min={0}
-            max={1}
-            step={0.02}
-            value={transport.swing}
-            onChange={(e) => patch({ swing: Number(e.target.value) })}
-            aria-label="Swing amount"
-          />
-          <span className="num w-8 text-[11px]">{Math.round(transport.swing * 100)}</span>
-        </div>
-        <div className="flex items-center gap-2 py-1">
-          <span className="lbl w-16">Human</span>
-          <input
-            type="range"
-            className="rng flex-1"
-            min={0}
-            max={1}
-            step={0.02}
-            value={transport.humanize}
-            onChange={(e) => patch({ humanize: Number(e.target.value) })}
-            aria-label="Humanise timing and dynamics"
-          />
-          <span className="num w-8 text-[11px]">{Math.round(transport.humanize * 100)}</span>
-        </div>
-      </section>
+      {!simpleMode && (
+        <section>
+          <button
+            className="lbl mb-1.5 flex w-full items-center gap-1 underline decoration-rule2"
+            onClick={() => setShowScoreOpts((v) => !v)}
+            aria-expanded={showScoreOpts}
+          >
+            Whole score {showScoreOpts ? '−' : '+'}
+          </button>
+          {showScoreOpts && (
+            <>
+              {(
+                [
+                  ['Transpose', 'transpose', -12, 12, 1] as const,
+                  ['Room', 'reverb', 0, 0.85, 0.01] as const,
+                  ['Swing', 'swing', 0, 1, 0.02] as const,
+                  ['Human', 'humanize', 0, 1, 0.02] as const,
+                ]
+              ).map(([label, key, min, max, step]) => (
+                <div key={key} className="flex items-center gap-2 py-0.5">
+                  <span className="lbl w-16">{label}</span>
+                  <input
+                    type="range"
+                    className="rng flex-1"
+                    min={min}
+                    max={max}
+                    step={step}
+                    value={transport[key] as number}
+                    onChange={(e) => patch({ [key]: Number(e.target.value) })}
+                    aria-label={label}
+                  />
+                  <span className="num w-8 text-[11px]">
+                    {key === 'transpose'
+                      ? (transport.transpose > 0 ? '+' : '') + transport.transpose
+                      : Math.round((transport[key] as number) * 100)}
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
+        </section>
+      )}
     </div>
   );
 }

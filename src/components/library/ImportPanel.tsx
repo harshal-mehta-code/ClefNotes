@@ -20,6 +20,7 @@ export default function ImportPanel() {
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [pages, setPages] = useState<RasterPage[]>([]);
+  const [recognised, setRecognised] = useState(false);
   const [url, setUrl] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -28,10 +29,12 @@ export default function ImportPanel() {
       setError(null);
       setNote(null);
       setPages([]);
+      setRecognised(false);
       setStatus('Reading…');
       try {
         const result = await readScoreFile(file, setStatus);
         if ('pages' in result && Array.isArray(result.pages)) setPages(result.pages as RasterPage[]);
+        setRecognised(result.source === 'omr');
         setStatus('Engraving…');
         await loadScore(result.musicXml, {
           source: result.source,
@@ -144,11 +147,41 @@ export default function ImportPanel() {
       )}
 
       {note && (
-        <div className="mb-5 border-l-4 border-riso-mint bg-panel px-4 py-3">
-          <div className="lbl mb-1" style={{ color: 'rgb(var(--mint))' }}>
-            Imported
+        <div
+          className="mb-5 border-l-4 bg-panel px-4 py-3"
+          style={{ borderColor: recognised ? 'rgb(var(--warn))' : 'rgb(var(--mint))' }}
+        >
+          <div className="lbl mb-1" style={{ color: recognised ? 'rgb(var(--warn))' : 'rgb(var(--mint))' }}>
+            {recognised ? 'Recognised — read this' : 'Imported'}
           </div>
           <p className="text-[14.5px] leading-snug text-ink2">{note}</p>
+
+          {recognised && (
+            <>
+              <p className="mt-2 text-[14px] leading-snug text-ink2">What it does not read:</p>
+              <ul className="mt-1 flex flex-col gap-0.5">
+                {[
+                  ['Key signature', 'set it in the Studio — one tap fixes every note of that letter'],
+                  ['Ties and slurs', 'tied notes come through as separate notes'],
+                  ['Two voices on one staff', 'they are merged, so rhythms will be wrong'],
+                  ['Dynamics and articulation', 'ignored entirely'],
+                ].map(([what, why]) => (
+                  <li key={what} className="flex items-baseline gap-2 text-[13.5px] leading-snug">
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-warn" />
+                    <span>
+                      <span className="font-display font-bold">{what}</span>{' '}
+                      <span className="text-ink3">— {why}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-2 max-w-[62ch] text-[13.5px] leading-snug text-ink3">
+                On a dense arrangement this is a sketch to correct, not a transcription. If the
+                publisher offers MusicXML, that route is exact and takes one step.
+              </p>
+            </>
+          )}
+
           <button className="btn mt-2.5" onClick={() => setView('studio')}>
             Open in Studio →
           </button>
