@@ -1,0 +1,18 @@
+{
+  "name": "ClefNotes",
+  "short_name": "ClefNotes",
+  "description": "Sheet music in, playable part-by-part music out.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#121118",
+  "theme_color": "#121118",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
