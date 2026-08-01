@@ -48,8 +48,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Build assets are content-hashed, so cache first is safe and fast. That
-  // includes the Verovio WASM, which is the one download worth never repeating.
+  // Build assets are content-hashed, so cache first is safe and fast.
   event.respondWith(
     caches.match(request).then(
       (hit) =>

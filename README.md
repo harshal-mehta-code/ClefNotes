@@ -1,11 +1,11 @@
 # ClefNotes
 
-**Sheet music in, playable part-by-part music out.**
+**Drop in a PDF of sheet music. Click any note on the page and hear it.**
 
-Drop in a score and ClefNotes engraves it, plays it, lights each note as it
-sounds, and gives every part its own track — so you can solo your line, mute it
-and play along with the rest, slow the hard bar to 40%, and hear the words sung
-back to you.
+You get your own score back — the page exactly as it was printed — with every
+notehead made playable. Tap one to hear that pitch. Drag along a phrase to hear
+the phrase. Pick the instrument you want it in. A piano roll and a keyboard
+underneath show what you are hearing.
 
 It is free, it runs entirely in the browser, and it needs no account, no server
 and no API key. Your scores never leave the device.
@@ -14,47 +14,81 @@ and no API key. Your scores never leave the device.
 
 ## Why it works this way
 
-Three constraints shaped every technical decision:
+This started as a full transcription app — recognise the score, rebuild it,
+re-engrave it, play it back with a moving cursor. It read the right number of
+staves and most of the noteheads, and it still sounded like different music.
 
-**It has to be free.** So there is no backend. ClefNotes is a static site: the
-recognition, the synthesis, the singing and the storage all happen in your
-browser. Hosting it costs nothing, and nothing can be metered or shut off.
+The reason is that **rhythm is the least reliable thing on a page.** Pitch is
+geometry: once you know where the staff lines are, a notehead's height *is* its
+pitch, and that is nearly impossible to get wrong. Duration is inference —
+stems, flags, beams, dots, ties — and every error compounds. One misread quaver
+on page one shifts every bar after it, and a listener hears a wrong tune, not a
+small mistake.
 
-**It has to be honest.** Optical music recognition is never perfect, and a wrong
-note destroys more trust than a missing feature earns. So imports are tiered by
-how much they can be trusted, and the app tells you which tier you got.
+So ClefNotes does not read rhythm, and does not re-engrave anything.
 
-**Sight and sound must never disagree.** A cursor that drifts from the audio is
-worse than no cursor at all.
+**Your page stays your page.** The image you imported is what you see. Nothing
+is redrawn, so nothing can come out looking like a different piece.
 
-That last one drove the core design. Verovio engraves the score *and* produces
-the timemap that playback is scheduled from, so the note that lights up is by
-construction the note that sounds. Everything — the moving cursor, the
-highlighted notehead, the karaoke syllable, the bar/beat readout — is a *view*
-of `AudioContext.currentTime`. Nothing drives the clock; everything reads it.
+**Timing comes from you.** There is no transport, no tempo, no playhead. You
+click, and that note sounds. The phrasing is yours, which is exactly right when
+you are working out how a line goes.
+
+**Where detection missed, pointing still works.** Click anywhere on a staff and
+you hear the pitch at that height, notehead or not. The safety net means a
+half-recognised page is still a useful page.
+
+The whole model is: *position → pitch → sound.* That is one inference, and it is
+the one that is reliable.
 
 ---
 
-## Getting your music in
+## What's in it
 
-Four routes, best first. The import screen names which one you got.
+**The sheet.** Your PDF, page by page, with a transparent layer over it that
+knows where the staves and noteheads are. Detected notes carry a faint dot, so
+you can see what the app found — toggle it off when you want a clean page.
+Hovering shows the pitch under the pointer. Zoom to taste.
 
-| Route | Accuracy | How |
-| --- | --- | --- |
-| **MusicXML / `.mxl`** | Exact | Every note, lyric and marking, straight in |
-| **PDF with a score inside** | Exact | MuseScore attaches the real MusicXML to its PDF exports — ClefNotes finds and unpacks it, no recognition needed |
-| **MIDI** | Exact pitch and rhythm | Notation details (beaming, spelling) are inferred |
-| **PDF → recognition** | Best effort | The built-in OMR reads clean printed scores |
+**Instruments.** About twenty synthesised voices — pianos, strings, winds,
+brass, organs, mallets, plucked. Synthesised rather than sampled because
+samples need bandwidth and a host, and the whole app is a static file.
 
-The fastest route to a perfect import is a MusicXML export — MuseScore,
-Sibelius, Finale and Dorico all produce one.
+**Piano roll.** The notes of the page you are looking at, laid out by position
+across and pitch up the side, coloured by which staff they sit on. Scrolling the
+sheet scrolls the roll. Click a dot to select and hear it. It shows *shape* —
+where a line climbs, where the parts cross — which is the thing that is hard to
+see and easy to hear.
 
-### About the recognition
+**Keyboard.** A piano along the bottom that lights up with whatever is
+sounding, so an interval you can hear gets a name and a shape.
 
-The OMR is a classical computer-vision pipeline, not a model, because it has to
-run offline and ship inside a static site: Otsu threshold → horizontal
-projection for staff lines → staff-line removal → shape-tested notehead
-detection → stem/beam analysis for durations → barlines.
+**Corrections.** Click a note and the arrow keys move it: `↑` `↓` a step,
+`shift ↑` `↓` an octave. Corrected notes turn gold so you can see what you have
+touched, and the correction is saved with the score.
+
+**Clef per staff.** Recognition cannot see the small 8 under a tenor clef, and
+the wrong clef puts a whole staff in the wrong octave. There is a picker on
+every staff, sitting quietly in the margin until you go looking.
+
+**Key signature.** One control in the header. Earlier versions guessed, and a
+wrong guess silently mis-pitches every note of that letter — worse than asking.
+
+**Library.** Local, offline, no account. Scores live in IndexedDB on the
+device.
+
+Light and dark themes, installable as a PWA, and it works with no network once
+loaded.
+
+---
+
+## About the recognition
+
+A classical computer-vision pipeline, not a model, because it has to run offline
+inside a static site:
+
+Otsu threshold → horizontal projection for staff lines → staff-line removal →
+run-length shape tests for noteheads, filled and hollow.
 
 Pages are rendered and recognised **one at a time** and released before the
 next: a page at this resolution is ~30 MB of pixels, and holding a seven-page
@@ -62,120 +96,19 @@ score in memory at once is enough for a phone to kill the tab.
 
 Staves are grouped into systems by looking for the barline running through the
 gap between them, not by measuring the gap. On real choral music the space
-within a system and the space between systems are near enough identical, and
-the gap heuristic collapsed a two-part score into four.
+within a system and the space between systems are near enough identical, and the
+gap heuristic collapsed a two-part score into four.
 
-**Voices sharing a staff are separated**, which is what makes close-harmony
-music work at all: barbershop SATB is four voices on two staves, and a hymn is
-the same idea. Two engraving conventions give it away. Where the voices share a
-rhythm they share a stem, so two noteheads sit at the same horizontal position —
-read left to right they would double the note count and wreck the rhythm. Where
-the rhythms differ each voice gets its own stem, the upper always up and the
-lower always down, *contrary* to single-voice engraving where the stem follows
-the pitch. A stemless semibreve — the sustained bass under a moving line — is
-placed by pitch.
+Pitch is then pure geometry — the number of half-spaces from the bottom staff
+line — mapped through the clef and the key.
 
-Rhythm is fitted **per measure**. Durations read from stems and beams are the
-least reliable thing in the pipeline, and left alone their errors accumulate:
-one misread quaver on page one shifts every bar after it. Barlines are far
-easier to see than beams, so each measure is normalised to the length the time
-signature demands and an error stays inside its own bar.
+**What it does not read**, by design: durations, rests, ties, slurs, dynamics,
+articulation, repeats, time signatures, key signatures. None of them are needed
+to answer "what does this note sound like", and every one of them is a way to be
+wrong.
 
-**It is genuinely beta, and the ceiling is low on dense music.** On a clean
-printed score it finds the right number of staves, the right number of parts,
-and most of the noteheads. It does not read:
-
-- **key signatures** — so the Studio asks you, in one tap, rather than guessing;
-  a wrong key silently mis-pitches every note of that letter
-- **octave clefs** — the small 8 under a tenor clef is invisible to it, so the
-  Studio offers a clef per part; choosing one moves the printed staff and the
-  sounding pitch together
-- **ties and slurs** — a tied note arrives as two notes
-- **dynamics, articulation, repeats**
-
-On a barbershop or piano-vocal chart, expect a sketch to correct rather than a
-transcription. If the publisher offers MusicXML, take it — that route is exact
-and takes one step.
-
----
-
-## What's in it
-
-**Studio** — engraved score with note-level highlighting, piano roll, or both
-split, over a **piano keyboard that lights up** in each part's colour as it
-plays. Per-part instrument, volume, pan and octave. Solo, mute, and
-**minus-one** (mute your part, the ensemble plays around you). Ten one-click
-sound packs — choir, orchestra, chapel organ, jazz combo, lo-fi, 8-bit, music
-box, baroque. Tempo 28–220 BPM plus a 25–200% speed multiplier, both without
-touching pitch. Loop any bar range by dragging across the score. Step mode to
-walk note by note. Metronome, count-in, transpose, swing, humanise, reverb.
-
-**Fix notes** — click any note and correct it: arrows move it by a semitone,
-shift-arrows by an octave, delete replaces it with a rest of the same length,
-and lyrics can be retyped. Every edit is heard immediately and is undoable.
-This is what makes a recognised PDF into a score you can rely on. Editing turns
-itself off on scores where notes can't be lined up one-for-one, rather than
-risk changing the wrong one.
-
-**Transposing instruments** — tell a part you play a B♭ trumpet and the
-notation is rewritten to what you actually read, while playback shifts the
-other way so the piece still sounds in the key everyone else is in.
-
-**Perform** — fills the screen with a larger engraving, hides everything else
-and asks the screen to stay awake. For a phone or tablet on a music stand.
-
-**Share** — one button packs the score, the mix and the loop into a link.
-A whole SATB movement comes to about 3 KB of URL. It travels in the fragment,
-so it is never sent to a server: a section leader can set the altos loud with
-bars 41–56 looping and send that exact state to eleven people.
-
-**Practice Lab** — a trouble map where bars redden as you keep going back to
-them, and one tap builds a drill from just those bars. A tempo ramp where each
-clean pass unlocks +5%. Live pitch scoring from the microphone via YIN
-autocorrelation, with a tuning meter in cents. A **tuner**, with selectable
-reference pitch, because everyone tunes before they practise. **Record a take**
-over the score and play it back with the score running underneath — almost
-everyone rushes somewhere they can't hear while concentrating. **Ear training**
-whose questions are drawn from the piece you have open, so getting better at
-intervals is the same work as learning the music. Streaks, XP and per-score
-mastery.
-
-**Progress** — a daily goal ring, twelve levels from Beginner to Maestro, and
-eighteen achievements that reward practice *habits* rather than time served:
-slowing a passage down, isolating your line, going back to fix a wrong note.
-
-**ClefVox** — a formant singing synthesiser. Lyric syllables are mapped to IPA
-vowels, each vowel sets three formant frequencies, and a glottal pulse train at
-the note's pitch is filtered through them. Consonants are shaped noise bursts;
-vibrato and breath sit on top. Soprano, alto, tenor, bass, choir ×6, children
-and robot voices, and one-click **SATB learning tracks** — your part sings the
-words at full volume while the others stay underneath. It sounds synthetic on
-purpose; a rehearsal track should sound like a guide, not a performance.
-
-**Library** — local, offline, no account. A shelf of public-domain scores ships
-with the app. Setlists group scores for a concert or a lesson. A daily
-sight-reading phrase is generated fresh at your grade, the same for everyone on
-a given date. Export the whole library as one JSON file; that is the sync
-story. Export any score as WAV (rendered offline, exactly what you hear), MIDI,
-or MusicXML.
-
-**Simple by default.** The Studio opens with four controls — play, stop,
-tempo, parts — and everything else is behind one tap on **More**. The app has a
-lot in it, and meeting someone with all of it at once is how you lose them
-before they hear a note. The choice is remembered.
-
-Light and dark themes, a **⌘K command palette** that reaches every control,
-keyboard shortcuts throughout, and installable as a PWA. On a phone the mixer
-becomes a bottom sheet rather than disappearing — per-part control is the point
-of the app.
-
-### Keyboard
-
-`⌘K` / `?` command palette · `space` play/pause (or advance, in step mode) ·
-`←` `→` step · `esc` stop · `l` loop · `m` metronome · `[` `]` tempo ∓4
-
-While **Fix notes** is on: `↑` `↓` semitone · `shift ↑` `↓` octave ·
-`←` `→` next/previous note · `delete` to rest · `⌘Z` undo
+Deliberately unhandled: accidentals written in front of a note. A sharp or flat
+on the page won't move the pitch — nudge it with the arrow keys.
 
 ---
 
@@ -186,16 +119,21 @@ npm install
 npm run dev          # development
 npm run build        # production build into dist/
 npm run preview      # serve the build
-npm run smoke        # 28 end-to-end browser checks against the preview
+npm run smoke -- score.pdf   # end-to-end browser checks against the preview
 ```
+
+The smoke test drives a real browser against the production build, imports a
+PDF you point it at, clicks a notehead, and measures the **master audio bus** to
+confirm sound actually came out. That last part matters: an earlier version
+verified audio with an offline render, which passed happily while live playback
+was completely silent.
 
 ### Deploying
 
 `dist/` is a static bundle with no backend, so it goes on any static host.
 `vercel.json` is included and Vercel needs no configuration beyond connecting
-the repository — it sets SPA rewrites, immutable caching for the hashed assets
-(which is what makes the 7.5 MB Verovio chunk a one-time download), and
-always-revalidate for the shell and the service worker.
+the repository — it sets SPA rewrites, immutable caching for the hashed assets,
+and always-revalidate for the shell and the service worker.
 
 For a project-scoped path such as GitHub Pages, set the base:
 
@@ -210,64 +148,37 @@ BASE=/ClefNotes/ npm run build
 | Layer | Choice | Why |
 | --- | --- | --- |
 | App | Vite + React + TypeScript | Static output, no server to pay for |
-| Engraving | Verovio (WASM) | MusicXML → SVG **and** a timemap, from one pass |
-| Playback | Custom Web Audio scheduler | Lookahead scheduling against the audio clock; tempo changes mid-phrase without drift |
-| Instruments | Synthesised | Sample libraries need bandwidth and a host; these are a few hundred bytes each |
-| Singing | Formant synthesis | No model, no API, no per-note cost |
-| PDF | pdf.js | Rasterising and attachment extraction, client-side |
-| Pitch detection | YIN autocorrelation | Tracks the period, so it works when the fundamental is weak |
+| PDF | pdf.js | Rasterising client-side, one page at a time |
+| Recognition | Classical CV, hand-written | Runs offline; no model to download |
+| Sound | Web Audio, synthesised | A preset is a few hundred bytes; samples would need a host |
 | Storage | IndexedDB via Dexie | No account, instant, works offline |
+
+The whole bundle is about 280 KB (93 KB gzipped).
 
 ### Layout
 
 ```
 src/
   lib/
-    verovio/engraver.ts   Engraving + the playback model, from one pass
-    score/                Score DSL → MusicXML, MIDI import, editing, generator
-    audio/                Transport, instruments, ClefVox, pitch, WAV render
-    import/               File sniffing, PDF tiers, the OMR pipeline
-    progress/             Achievements, levels, daily goal
-    share/                Compressed score-in-a-URL
-    db/                   Dexie schema, practice stats, streaks
-  components/             studio · lab · vox · library · ui
-  data/scores/            The bundled shelf
+    detect/   types.ts   the data model — deliberately has no concept of time
+              notes.ts   staves, systems, noteheads
+              pdf.ts     page-at-a-time import
+    audio/    player.ts       one-shot voices, no transport
+              instruments.ts  synthesis presets
+  components/ Sheet · Contour · Keys · Library
+  state/      store.ts   Zustand + Dexie
 ```
-
----
-
-## The bundled shelf
-
-Deliberately small: only tunes that could be encoded correctly. A wrong note in
-a music app costs more trust than a thin demo library does.
-
-- **Ode to Joy** — Beethoven's melody with a four-part chorale setting written
-  for this project. Words by Henry van Dyke (1907).
-- **Frère Jacques** — traditional, as a four-part round.
-- **Row, Row, Row Your Boat** — traditional, three-part round in 6/8.
-- **Twinkle, Twinkle, Little Star** — traditional; words by Jane Taylor (1806).
-
-All public domain. The harmonisations are original to this project.
 
 ---
 
 ## Known limits
 
-- OMR does not detect clefs, key signatures or time signatures, and misses
-  notes beyond two ledger lines (the band is kept tight to avoid reading
-  lyrics as noteheads).
-- MIDI import keeps the top voice where a track contains chords, since a
-  monophonic line is more useful for practice.
-- Importing from a URL only works where the host allows cross-origin reads;
-  with no server there is nothing to proxy through. The app says so and tells
-  you to download the file instead.
-- ClefVox maps English spelling to vowels by rule, not by dictionary. An
-  odd-sounding word means a vowel guessed wrong — never a wrong note.
-- The note editor changes pitches, rests and lyrics but not rhythm; altering a
-  duration would need the rest of the bar rewritten to stay valid.
-- Share links carry the score itself, so a very large orchestral work will
-  exceed what a URL can hold. The app says so and points at MusicXML export
-  rather than producing a link that silently truncates.
-- Recorded takes are kept in memory for the session only. A recording of
-  someone practising is private, and quietly filling their disk with it is not
-  a decision to make on their behalf — save the ones you want to keep.
+- Accidentals printed next to a note are not read, so a note marked sharp on
+  the page sounds natural until you nudge it.
+- Handwritten and heavily ornamented scores read poorly; the detector expects
+  clean printed engraving.
+- Grace notes, cue notes and small ossia staves are treated like anything else.
+- Noteheads more than about two ledger lines away from a staff are skipped, to
+  avoid reading lyric text as notes.
+- There is no playback of a passage in time, on purpose. Clicking is the whole
+  interaction, and it is the part that is trustworthy.

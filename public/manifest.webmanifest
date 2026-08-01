@@ -1,7 +1,7 @@
 {
   "name": "ClefNotes",
   "short_name": "ClefNotes",
-  "description": "Sheet music in, playable part-by-part music out.",
+  "description": "Drop in a PDF of sheet music and click any note to hear it.",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

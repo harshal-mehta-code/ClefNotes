@@ -1,12 +1,12 @@
 /**
  * End-to-end smoke test.
  *
- * Drives a real browser against a production build and checks the things that
- * are easy to break and hard to notice: that parts stay separate, that a note
- * lights up while it sounds, and that the transport actually moves.
+ * Drives a real browser against a production build. The checks are deliberately
+ * about the two things the whole app rests on: that a PDF yields staves and
+ * noteheads, and that clicking one actually makes a sound.
  *
  *   npm run build && npm run preview &
- *   node scripts/smoke.mjs
+ *   node scripts/smoke.mjs path/to/score.pdf
  *
  * Set CHROME to override the browser binary.
  */
@@ -15,22 +15,24 @@ import { chromium } from 'playwright';
 
 const BASE = process.env.BASE_URL ?? 'http://localhost:4173';
 const CHROME = process.env.CHROME ?? undefined;
+const PDF = process.argv[2];
 
 const checks = [];
 function check(name, pass, detail = '') {
-  checks.push({ name, pass, detail });
+  checks.push({ name, pass });
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`);
+}
+
+if (!PDF) {
+  console.error('Pass a PDF to test with: node scripts/smoke.mjs score.pdf');
+  process.exit(2);
 }
 
 const browser = await chromium.launch({
   executablePath: CHROME,
   args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'],
 });
-const context = browser.contexts()[0] ?? (await browser.newContext());
-await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE }).catch(() => {});
-const page = await browser.newPage({ viewport: { width: 1500, height: 940 } });
-await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: BASE }).catch(() => {});
-
+const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
 page.on('console', (m) => {
@@ -38,240 +40,136 @@ page.on('console', (m) => {
 });
 
 await page.goto(BASE, { waitUntil: 'networkidle' });
-await page.waitForTimeout(800);
+await page.waitForTimeout(600);
+check('the app loads to the drop zone', (await page.locator('text=Drop a PDF here').count()) === 1);
 
-// A fresh profile gets the welcome screen; a returning one does not.
-const welcome = page.locator('[aria-label="Welcome to ClefNotes"]');
-check('first run shows the welcome screen', (await welcome.count()) === 1);
-if (await welcome.count()) {
-  await page.locator("button:has-text(\"I'll look around\")").click();
-  await page.waitForTimeout(400);
+await page.locator('input[type=file]').first().setInputFiles(PDF);
+
+let info = null;
+for (let i = 0; i < 180; i++) {
+  info = await page.evaluate(() => {
+    const s = window.__cn.getState();
+    return {
+      loading: s.loading,
+      error: s.error,
+      staves: s.score?.staves.length ?? 0,
+      notes: s.score?.notes.length ?? 0,
+      pages: s.score?.pages.length ?? 0,
+    };
+  });
+  if (info.error || (!info.loading && info.staves > 0)) break;
+  await page.waitForTimeout(1000);
 }
 
-check('shelf seeds into the library', (await page.locator('article').count()) >= 4);
+check('the PDF imports', !info.error, info.error ?? '');
+check('staves are found', info.staves > 0, `${info.staves} staves on ${info.pages} pages`);
+check('noteheads are found', info.notes > 0, `${info.notes} notes`);
+check('the page image is shown, not a re-engraving', (await page.locator('main img').count()) > 0);
 
-await page.locator('article', { hasText: 'Ode to Joy' }).locator('button', { hasText: 'Open' }).click();
-await page.waitForTimeout(6000);
+// The whole product: click a notehead, hear it.
+const level = async (ms = 1400) =>
+  await page.evaluate(async (d) => {
+    const p = window.__player;
+    let peak = 0;
+    const t = performance.now();
+    while (performance.now() - t < d) {
+      // The context only exists once a gesture has started audio, so keep
+      // trying to attach the meter rather than giving up before it appears.
+      p.createMeter();
+      peak = Math.max(peak, p.outputLevel());
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return peak;
+  }, ms);
 
-const model = await page.evaluate(() => {
-  const s = window.__cn.getState().score;
-  return s && {
-    parts: s.parts.length,
-    lyrics: s.parts.filter((p) => p.hasLyrics).length,
-    notes: s.notes.length,
-    measures: s.measureCount,
-    distinctParts: new Set(s.notes.map((n) => n.part)).size,
-    quarterNotes: s.notes.filter((n) => Math.abs(n.qDur - 1) < 1e-6).length,
+const first = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const n = s.score.notes[0];
+  const st = s.score.staves.find((x) => x.id === n.staff);
+  const pg = s.score.pages.find((p) => p.index === n.page);
+  // Which overlay this note is on, counting only pages that were rendered.
+  const pageOrdinal = s.score.pages.findIndex((p) => p.index === n.page);
+  return { x: n.x / pg.width, y: n.y / pg.height, page: n.page, pageOrdinal, staffClef: st.clef };
+});
+
+// Click through the element so Playwright scrolls it into view first — the
+// pages are tall and a raw viewport coordinate lands nowhere.
+const svg = page.locator('main svg').nth(first.pageOrdinal);
+await svg.scrollIntoViewIfNeeded();
+const box = await svg.boundingBox();
+await svg.click({ position: { x: box.width * first.x, y: box.height * first.y } });
+const clickPeak = await level();
+check('clicking a notehead sounds it', clickPeak > 0.005, `peak ${clickPeak.toFixed(4)}`);
+
+const selected = await page.evaluate(() => window.__cn.getState().selected);
+check('clicking selects the note for correction', selected != null);
+
+// Clicking bare staff still gives the right pitch — the safety net for a
+// notehead the detector missed.
+await page.evaluate(() => window.__cn.getState().select(null));
+const before = await page.evaluate(() => window.__cn.getState().ringing.length);
+await svg.click({ position: { x: box.width * 0.62, y: box.height * first.y } });
+const staffPeak = await level();
+const after = await page.evaluate(() => window.__cn.getState().ringing.length);
+check('clicking bare staff sounds the pitch there', staffPeak > 0.005 || after > before, `peak ${staffPeak.toFixed(4)}`);
+
+// Correcting a pitch.
+await page.evaluate(() => {
+  const s = window.__cn.getState();
+  s.select(s.score.notes[0].id);
+});
+const pitchBefore = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const n = s.score.notes[0];
+  const st = s.score.staves.find((x) => x.id === n.staff);
+  return window.__cn.getState().score.nudges[n.id] ?? 0;
+});
+await page.keyboard.press('ArrowUp');
+await page.waitForTimeout(400);
+const pitchAfter = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  return s.score.nudges[s.score.notes[0].id] ?? 0;
+});
+check('arrow keys correct a note', pitchAfter === pitchBefore + 1, `${pitchBefore} → ${pitchAfter}`);
+
+// Setting a clef applies to that staff on every system — the difference
+// between one tap and twenty-three on a choral chart.
+const clefs = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const first = s.score.staves[0];
+  const changed = s.setStaffClef(first.id, 'treble8');
+  const after = window.__cn.getState().score.staves;
+  const peers = after.filter((x) => x.positionInSystem === first.positionInSystem);
+  return {
+    changed,
+    peers: peers.length,
+    allSet: peers.every((x) => x.clef === 'treble8'),
+    othersUntouched: after
+      .filter((x) => x.positionInSystem !== first.positionInSystem)
+      .every((x) => x.clef !== 'treble8'),
   };
 });
-
-check('score engraves with four parts', model?.parts === 4, `got ${model?.parts}`);
-check('notes are spread across all parts', model?.distinctParts === 4, `got ${model?.distinctParts}`);
-check('lyrics attach to every voice', model?.lyrics === 4, `got ${model?.lyrics}`);
-check('durations are tempo-independent', model?.quarterNotes > 100, `${model?.quarterNotes} quarter notes`);
-
-await page.locator('button:has-text("Play")').first().click();
-await page.waitForTimeout(1500);
-const a = await page.evaluate(() => ({
-  q: window.__cn.getState().q,
-  lit: document.querySelectorAll('.score-host g.note.cn-on').length,
-}));
-await page.waitForTimeout(1600);
-const b = await page.evaluate(() => window.__cn.getState().q);
-
-check('transport advances', b > a.q, `${a.q.toFixed(2)} → ${b.toFixed(2)}`);
-check('sounding notes are highlighted', a.lit > 0, `${a.lit} lit`);
-
-// The live audio graph actually produces signal.
-// This is deliberately measured off the master bus during real playback: the
-// offline WAV renderer is a separate code path, and passing there once hid a
-// bug that left live playback completely silent.
-const audio = await page.evaluate(async () => {
-  const eng = window.__engine;
-  if (!eng || !eng.audioContext) return { ok: false, why: 'no audio context' };
-  eng.createMeter();
-  let peak = 0;
-  const started = performance.now();
-  while (performance.now() - started < 1800) {
-    peak = Math.max(peak, eng.outputLevel());
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  return { ok: peak > 0.005, peak, state: eng.audioContext.state };
-});
-check('live playback produces audible signal', audio.ok, `peak ${audio.peak?.toFixed(4)} · ctx ${audio.state}`);
-
-await page.locator('aside button:has-text("Mute")').first().click();
-await page.waitForTimeout(400);
-check('muting a part fades its staves', (await page.locator('.score-host g.staff.cn-muted').count()) > 0);
-await page.locator('aside button:has-text("Mute")').first().click();
-
-// Isolation, measured in audio rather than in CSS. The staves fading is not
-// evidence that a part stopped sounding, and hearing one line on its own is
-// the whole reason this app exists.
-const settleLevel = async (settle = 2600, ms = 1400) =>
-  await page.evaluate(
-    async ([st, d]) => {
-      const e = window.__engine;
-      e.createMeter();
-      await new Promise((r) => setTimeout(r, st));
-      let pk = 0;
-      const t = performance.now();
-      while (performance.now() - t < d) {
-        pk = Math.max(pk, e.outputLevel());
-        await new Promise((r) => setTimeout(r, 20));
-      }
-      return pk;
-    },
-    [settle, ms],
-  );
-
-const fullLevel = await settleLevel();
-await page.locator('aside button:has-text("Only")').nth(1).click();
-const soloLevel = await settleLevel();
 check(
-  'solo actually isolates one part',
-  soloLevel > 0.01 && soloLevel < fullLevel * 0.92,
-  `all ${fullLevel.toFixed(3)} → solo ${soloLevel.toFixed(3)}`,
+  'a clef applies to the same staff on every system',
+  clefs.allSet && clefs.othersUntouched && clefs.peers > 1,
+  `${clefs.changed} of ${clefs.peers} staves`,
 );
-await page.locator('aside button:has-text("Only")').nth(1).click();
 
-await page.evaluate(() => {
+// The piano roll follows the page you are looking at.
+const roll = await page.evaluate(async () => {
   const s = window.__cn.getState();
-  s.setAllMixes(s.mixes.map((m) => ({ ...m, muted: true, solo: false })));
+  const withNotes = [...new Set(s.score.notes.map((n) => n.page))].sort((a, b) => a - b);
+  const target = withNotes[withNotes.length - 1];
+  document.querySelector(`[data-page="${target}"]`)?.scrollIntoView();
+  await new Promise((r) => setTimeout(r, 1200));
+  return { target, visible: window.__cn.getState().visiblePage };
 });
-const silentLevel = await settleLevel(3200);
-check('muting every part gives real silence', silentLevel < 0.005, `peak ${silentLevel.toFixed(4)}`);
-await page.evaluate(() => {
-  const s = window.__cn.getState();
-  s.setAllMixes(s.mixes.map((m) => ({ ...m, muted: false, solo: false })));
-});
+check('the piano roll follows the page in view', roll.visible === roll.target, `page ${roll.visible + 1}`);
 
-await page.locator('button:has-text("Pause")').first().click();
-
-await page.evaluate(() => window.__cn.getState().setLoopBars([2, 4]));
-await page.waitForTimeout(300);
-const loop = await page.evaluate(() => {
-  const s = window.__cn.getState();
-  return { on: s.transport.loop, a: s.transport.loopStartQ, b: s.transport.loopEndQ };
-});
-check('loop range maps bars to quarter notes', loop.on && loop.a === 4 && loop.b === 16, JSON.stringify(loop));
-
-// --- simple mode is the default, and reveals everything on request --------
-check(
-  'simple mode hides the advanced controls by default',
-  (await page.locator('button:has-text("Fix notes")').count()) === 0 &&
-    (await page.locator('button:has-text("Parts")').count()) === 1,
-);
-await page.locator('button:has-text("More")').click();
-await page.waitForTimeout(400);
-check('“More” reveals the full control set', (await page.locator('button:has-text("Fix notes")').count()) === 1);
-
-// --- the note editor -------------------------------------------------------
-await page.locator('button:has-text("Fix notes")').click();
-await page.locator('.score-host g.note .notehead use').first().click({ force: true });
-await page.waitForTimeout(500);
-const pitchBefore = await page.evaluate(() => {
-  const s = window.__cn.getState().score;
-  return s.notes.find((n) => n.part === 0 && n.ordinal === 0).midi;
-});
-await page.locator('button:has-text("♯ up")').click();
-await page.waitForTimeout(3500);
-const edited = await page.evaluate(() => {
-  const s = window.__cn.getState().score;
-  return { midi: s.notes.find((n) => n.part === 0 && n.ordinal === 0).midi, total: s.notes.length };
-});
-check('editing raises a note by a semitone', edited.midi === pitchBefore + 1, `${pitchBefore} → ${edited.midi}`);
-
-await page.locator('button:has-text("Undo")').click();
-await page.waitForTimeout(3500);
-const undone = await page.evaluate(
-  () => window.__cn.getState().score.notes.find((n) => n.part === 0 && n.ordinal === 0).midi,
-);
-check('undo restores the original pitch', undone === pitchBefore);
-await page.locator('button:has-text("Fix notes")').click();
-
-// --- share links -----------------------------------------------------------
-// Exercised through the real button, then followed like a recipient would.
-await page.locator('button:has-text("Share")').click();
-await page.waitForTimeout(1200);
-const shareUrl = await page.evaluate(() => navigator.clipboard.readText().catch(() => ''));
-check('share button produces a link', shareUrl.includes('#s='), `${Math.round(shareUrl.length / 1024)} KB`);
-
-if (shareUrl.includes('#s=')) {
-  const recipient = await browser.newPage();
-  await recipient.goto(shareUrl, { waitUntil: 'networkidle' });
-  await recipient.waitForTimeout(7000);
-  const received = await recipient.evaluate(() => {
-    const s = window.__cn.getState().score;
-    return s ? { title: s.title, notes: s.notes.length } : null;
-  });
-  check(
-    'following a share link opens that score',
-    received?.notes === model.notes,
-    `${received?.title} · ${received?.notes} notes`,
-  );
-  await recipient.close();
-}
-
-// --- command palette -------------------------------------------------------
-await page.keyboard.press('Control+k');
-await page.waitForTimeout(400);
-const paletteOpen = await page.locator('[aria-label="Command palette"]').count();
-check('command palette opens', paletteOpen === 1);
-await page.keyboard.type('piano roll');
-await page.waitForTimeout(300);
-await page.keyboard.press('Enter');
-await page.waitForTimeout(600);
-check('palette runs a command', (await page.evaluate(() => window.__cn.getState().scoreMode)) === 'roll');
-await page.locator('button:has-text("Sheet")').first().click();
-
-// --- keyboard visualiser ---------------------------------------------------
-check('keyboard visualiser renders', (await page.locator('canvas').count()) >= 1);
-
-// --- achievements ----------------------------------------------------------
-await page.locator('nav button:has-text("Library")').click();
-await page.waitForTimeout(700);
-const badges = await page.evaluate(() => window.__cn.getState().unlocked.length);
-check('achievements unlock from real activity', badges > 0, `${badges} earned`);
-
-// --- transposing instruments ----------------------------------------------
-await page.locator('nav button:has-text("Studio")').click();
-await page.waitForTimeout(500);
-const concert = await page.evaluate(() => {
-  const s = window.__cn.getState();
-  return { midi: s.score.notes.find((n) => n.part === 0).midi, mix: s.mixes[0].transpose };
-});
-await page.locator('aside button[aria-expanded]').first().click();
-await page.waitForTimeout(300);
-await page.locator('aside select[aria-label^="Transposing instrument"]').first().selectOption('2');
-await page.waitForTimeout(4000);
-const transposed = await page.evaluate(() => {
-  const s = window.__cn.getState();
-  return { midi: s.score.notes.find((n) => n.part === 0).midi, mix: s.mixes[0].transpose };
-});
-check(
-  'B-flat part is written a tone up',
-  transposed.midi === concert.midi + 2,
-  `${concert.midi} → ${transposed.midi}`,
-);
-check(
-  'and playback compensates so it still sounds in concert pitch',
-  transposed.midi + transposed.mix === concert.midi + concert.mix,
-  `written ${transposed.midi} + offset ${transposed.mix}`,
-);
-await page.locator('aside select[aria-label^="Transposing instrument"]').first().selectOption('0');
-await page.waitForTimeout(4000);
-
-// --- tuner and recorder are present ---------------------------------------
-await page.locator('nav button:has-text("Practice Lab")').click();
-await page.waitForTimeout(800);
-check('tuner is available', (await page.locator('button:has-text("Start the tuner")').count()) === 1);
-check('take recorder is available', (await page.locator('button:has-text("Record a take")').count()) === 1);
-
-check('no console errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+check('the keyboard is on screen', (await page.locator('canvas').count()) >= 1);
+check('no console errors', errors.length === 0, errors.slice(0, 2).join(' | '));
 
 await browser.close();
-
 const failed = checks.filter((c) => !c.pass);
 console.log(`\n${checks.length - failed.length}/${checks.length} passed`);
 process.exit(failed.length ? 1 : 0);

@@ -8,16 +8,12 @@ export default defineConfig({
   plugins: [react()],
   build: {
     target: 'es2022',
-    chunkSizeWarningLimit: 3000,
+    chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
-        manualChunks: {
-          verovio: ['verovio/wasm', 'verovio/esm'],
-          pdf: ['pdfjs-dist'],
-        },
+        manualChunks: { pdf: ['pdfjs-dist'] },
       },
     },
   },
   worker: { format: 'es' },
-  optimizeDeps: { exclude: ['verovio'] },
 });

@@ -18,7 +18,7 @@ export type InstrumentId =
   | 'trumpet' | 'horn'
   | 'guitar' | 'harp' | 'marimba' | 'musicbox' | 'vibes'
   | 'chiptune' | 'synthpad' | 'bass'
-  | 'choir' | 'voice';
+  | 'choir';
 
 export interface InstrumentPreset {
   id: InstrumentId;
@@ -51,7 +51,7 @@ export interface InstrumentPreset {
   gain: number;
   /** Notes shorter than their written value, as a fraction. Keeps lines clear. */
   articulation?: number;
-  /** Comfortable range, used to auto-pick an instrument per part. */
+  /** Comfortable range of the real instrument, for reference. */
   range: [number, number];
 }
 
@@ -219,18 +219,13 @@ export const INSTRUMENTS: Record<InstrumentId, InstrumentPreset> = {
     gain: 0.5, range: [24, 60],
   },
 
-  // 'choir' is a wordless ahh; 'voice' routes to ClefVox and sings the lyrics.
+  // A wordless 'ahh' — the closest this gets to a voice.
   choir: {
     id: 'choir', name: 'Choir (ahh)', family: 'Voice', partials: P.choir,
     unison: 3, detuneCents: 11,
     attack: 0.14, decay: 0.3, sustain: 0.85, release: 0.5,
     cutoff: 2200, keyTrack: 0.4, q: 2, vibratoRate: 4.8, vibratoDepth: 7, vibratoDelay: 0.4,
     noise: 0.05, noiseDecay: 0.6, gain: 0.3, range: [40, 84],
-  },
-  voice: {
-    id: 'voice', name: 'ClefVox (sings lyrics)', family: 'Voice', partials: P.choir,
-    attack: 0.05, decay: 0.2, sustain: 0.9, release: 0.22,
-    cutoff: 3000, keyTrack: 0.3, gain: 0.5, range: [36, 84],
   },
 };
 
@@ -244,82 +239,6 @@ export function instrumentsByFamily(): Array<[string, InstrumentPreset[]]> {
     groups.get(p.family)!.push(p);
   }
   return Array.from(groups.entries());
-}
-
-/** Sound packs re-skin the whole score in one click — the "make it fun" lever. */
-export interface SoundPack {
-  id: string;
-  name: string;
-  blurb: string;
-  /** Instruments assigned to parts in order, cycling if there are more parts. */
-  voices: InstrumentId[];
-  /** Bass-register parts get this instead, when set. */
-  low?: InstrumentId;
-  reverb: number;
-  swing?: number;
-}
-
-export const SOUND_PACKS: SoundPack[] = [
-  {
-    id: 'choral', name: 'Choir', blurb: 'Voices, the way the score intends.',
-    voices: ['choir', 'choir', 'choir', 'choir'], reverb: 0.42,
-  },
-  {
-    id: 'clefvox', name: 'ClefVox', blurb: 'Sings the actual words.',
-    voices: ['voice', 'voice', 'voice', 'voice'], reverb: 0.34,
-  },
-  {
-    id: 'orchestra', name: 'Orchestra', blurb: 'Strings and winds by range.',
-    voices: ['violin', 'oboe', 'horn', 'cello'], low: 'cello', reverb: 0.4,
-  },
-  {
-    id: 'piano', name: 'Piano', blurb: 'Everything on one keyboard.',
-    voices: ['piano'], reverb: 0.18,
-  },
-  {
-    id: 'chapel', name: 'Chapel organ', blurb: 'Sustained, churchy, forgiving.',
-    voices: ['organ'], reverb: 0.6,
-  },
-  {
-    id: 'jazz', name: 'Jazz combo', blurb: 'Sax lead over an upright.',
-    voices: ['sax', 'epiano', 'guitar', 'bass'], low: 'bass', reverb: 0.22, swing: 0.32,
-  },
-  {
-    id: 'lofi', name: 'Lo-fi', blurb: 'Soft keys, slow attack, lots of room.',
-    voices: ['epiano', 'synthpad', 'vibes', 'bass'], low: 'bass', reverb: 0.5, swing: 0.18,
-  },
-  {
-    id: 'chiptune', name: '8-bit', blurb: 'Your chorale as a Game Boy cartridge.',
-    voices: ['chiptune'], reverb: 0.05,
-  },
-  {
-    id: 'musicbox', name: 'Music box', blurb: 'Delicate, and slightly haunted.',
-    voices: ['musicbox', 'musicbox', 'harp', 'harp'], reverb: 0.4,
-  },
-  {
-    id: 'baroque', name: 'Baroque', blurb: 'Harpsichord and plucked strings.',
-    voices: ['harpsichord', 'harpsichord', 'pizz', 'pizz'], reverb: 0.25,
-  },
-];
-
-/** Pick a sensible instrument for a part from its tessitura. */
-export function suggestInstrument(medianMidi: number, hasLyrics: boolean): InstrumentId {
-  if (hasLyrics) return 'choir';
-  if (medianMidi < 45) return 'cello';
-  if (medianMidi < 55) return 'horn';
-  if (medianMidi < 67) return 'clarinet';
-  return 'violin';
-}
-
-/** Assign a whole pack across the parts of a score. */
-export function applyPack(
-  pack: SoundPack,
-  parts: Array<{ medianMidi: number }>,
-): InstrumentId[] {
-  return parts.map((p, i) => {
-    if (pack.low && p.medianMidi < 52) return pack.low;
-    return pack.voices[i % pack.voices.length];
-  });
 }
 
 const waveCache = new WeakMap<BaseAudioContext, Map<string, PeriodicWave>>();
