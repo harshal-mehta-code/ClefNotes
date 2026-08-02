@@ -36,7 +36,8 @@ you are working out how a line goes.
 
 **Where detection missed, pointing still works.** Click anywhere on a staff and
 you hear the pitch at that height, notehead or not. The safety net means a
-half-recognised page is still a useful page.
+half-recognised page is still a useful page — but it is a safety net, not the
+main road: a tap lands on a notehead whenever one is plausibly what you meant.
 
 The whole model is: *position → pitch → sound.* That is one inference, and it is
 the one that is reliable.
@@ -49,6 +50,19 @@ the one that is reliable.
 camera button opens straight into it on a phone. Several photos become the
 pages of one score, since sheet music is rarely one page and that is how anyone
 would shoot it.
+
+**Aim, then hear.** A marker shows what a tap is about to play before it plays
+it — a ring around the notehead it will hit, or, where there is no note, a ghost
+sitting on the exact line or space that will sound, with the name beside it. On
+a phone the note sounds when your finger lifts, so the marker appears while it
+is still down and there is a moment to move it.
+
+Which note a tap means is decided by height, because height *is* the pitch: a
+tap anywhere within a notehead's own line or space is that notehead, and one a
+half-space high is a different note rather than a near miss. Sideways the target
+is far wider, since the next note along is further away than a fingertip is
+wide. Judging both directions alike, as this used to, meant a tap a couple of
+millimetres off the side fell through to bare staff and sounded something else.
 
 **The sheet.** Your page, page by page, with a transparent layer over it that
 knows where the staves and noteheads are. Detected notes carry a faint dot, so

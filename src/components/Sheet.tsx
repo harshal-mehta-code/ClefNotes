@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '../state/store';
 import {
   CLEFS,
@@ -15,7 +15,61 @@ import {
   type ClefId,
   type DetectedNote,
   type DetectedStaff,
+  type PageScore,
 } from '../lib/detect/types';
+
+/** What a point on the page resolves to: a notehead, or a place on a staff. */
+interface Aim {
+  page: number;
+  staff: string;
+  /** The notehead this would play, if it is one. */
+  note: string | null;
+  x: number;
+  y: number;
+  /** Staff spacing, so the marker is drawn to the size of the music. */
+  radius: number;
+  label: string;
+}
+
+/**
+ * The dots over the noteheads.
+ *
+ * Held apart from the rest of the page because the aiming marker follows the
+ * pointer, and without this every mouse move would re-diff a thousand of these.
+ */
+const Dots = memo(function Dots({
+  notes,
+  staves,
+  score,
+  selected,
+}: {
+  notes: DetectedNote[];
+  staves: DetectedStaff[];
+  score: PageScore;
+  selected: string | null;
+}) {
+  return (
+    <>
+      {notes.map((n) => {
+        const staff = staves.find((s) => s.id === n.staff);
+        if (!staff) return null;
+        const on = selected === n.id;
+        const edited = (score.nudges[n.id] ?? 0) !== 0 || n.id in (score.alters ?? {});
+        return (
+          <ellipse
+            key={n.id}
+            cx={n.x}
+            cy={n.y}
+            rx={staff.spacing * 0.78}
+            ry={staff.spacing * 0.6}
+            fill={on ? 'rgb(var(--pink))' : edited ? 'rgb(var(--gold))' : 'rgb(var(--blue))'}
+            opacity={on ? 0.5 : edited ? 0.36 : 0.16}
+          />
+        );
+      })}
+    </>
+  );
+});
 
 /**
  * Your sheet music, made audible.
@@ -48,7 +102,13 @@ export default function Sheet() {
   const viewport = useRef<HTMLDivElement | null>(null);
   /** Width of the scrollport, so a page can be sized in real pixels. */
   const [avail, setAvail] = useState(0);
-  const [hover, setHover] = useState<{ x: number; y: number; label: string } | null>(null);
+  /**
+   * What the pointer is on, or what the last tap landed on. Drawn on the page
+   * so that aiming is something you can see rather than something you find out
+   * about by hearing the wrong note.
+   */
+  const [aim, setAim] = useState<Aim | null>(null);
+  const aimTimer = useRef<number | undefined>(undefined);
   /** The pitch that last sounded, named — the app's answer, for you to check. */
   const [heard, setHeard] = useState<{ note: string | null; label: string } | null>(null);
   /** The last clef change, so it can be narrowed back to a single staff. */
@@ -144,6 +204,16 @@ export default function Sheet() {
 
   if (!score) return null;
 
+  /** Leave the marker up long enough to read after a tap, then clear it. */
+  const holdAim = () => {
+    window.clearTimeout(aimTimer.current);
+    aimTimer.current = window.setTimeout(() => setAim(null), 1800);
+  };
+  const clearAim = () => {
+    window.clearTimeout(aimTimer.current);
+    setAim(null);
+  };
+
   /**
    * How wide to draw a page. At zoom 1 it fills the screen, and above that it
    * overflows and pans — which is the only way zooming means anything on a
@@ -169,42 +239,101 @@ export default function Sheet() {
     return best;
   };
 
-  const handlePoint = (page: number, imgX: number, imgY: number, isDrag: boolean) => {
-    const notes = notesByPage.get(page) ?? [];
+  /**
+   * What a point on the page means, before anything is played.
+   *
+   * Height decides the pitch, so height decides which note: anywhere within a
+   * notehead's own line or space *is* that notehead, and a tap half a space
+   * high is a different pitch rather than a near miss. Sideways the target is
+   * much wider, because the next note along is further away than a fingertip is
+   * wide and there is nothing else the tap could have meant.
+   *
+   * Falling through to bare staff still works where a notehead was missed, but
+   * it is now what happens when there is genuinely nothing there, rather than
+   * what happens whenever a tap lands a couple of millimetres off.
+   */
+  const aimAt = (page: number, imgX: number, imgY: number): Aim | null => {
     const staff = staffAt(page, imgY);
-    if (!staff) return;
+    if (!staff) return null;
+    const sp = staff.spacing;
 
-    // Snap to a notehead when the pointer is near one.
-    let nearest: (typeof notes)[number] | null = null;
-    let bestDistance = Infinity;
-    for (const n of notes) {
+    let best: DetectedNote | null = null;
+    let bestScore = Infinity;
+    for (const n of notesByPage.get(page) ?? []) {
       if (n.staff !== staff.id) continue;
-      const dx = n.x - imgX;
-      const dy = n.y - imgY;
-      const d = Math.hypot(dx, dy * 0.8);
-      if (d < staff.spacing * 1.3 && d < bestDistance) {
-        nearest = n;
-        bestDistance = d;
+      const dy = Math.abs(n.y - imgY);
+      const dx = Math.abs(n.x - imgX);
+      if (dy > sp * 0.5 || dx > sp * 2.2) continue;
+      // Height first, and by a long way: sideways only breaks the tie between
+      // two notes that are equally on the line you tapped.
+      const score = dy * 4 + dx;
+      if (score < bestScore) {
+        bestScore = score;
+        best = n;
       }
     }
 
-    if (nearest) {
-      if (isDrag && lastSounded.current === nearest.id) return;
-      lastSounded.current = nearest.id;
-      select(nearest.id);
-      setHeard({ note: nearest.id, label: noteName(nearest, staff, score) });
-      soundNote(nearest);
+    if (best) {
+      return {
+        page,
+        staff: staff.id,
+        note: best.id,
+        x: best.x,
+        y: best.y,
+        radius: sp,
+        label: noteName(best, staff, score),
+      };
+    }
+
+    // Nothing there. The marker sits on the exact line or space that will
+    // sound, not where the finger landed, so a miss is visible as a miss.
+    const step = stepAt(staff, imgY);
+    return {
+      page,
+      staff: staff.id,
+      note: null,
+      x: imgX,
+      y: staff.lines[4] - step * (sp / 2),
+      radius: sp,
+      label: stepToName(step, staff.clef, staffSharps(staff, score)),
+    };
+  };
+
+  /** Show what a point would play, without playing it. */
+  const showAim = (next: Aim | null) => {
+    setAim((prev) => {
+      const same =
+        prev?.page === next?.page &&
+        prev?.note === next?.note &&
+        prev?.y === next?.y &&
+        (next?.note != null || prev?.x === next?.x);
+      return same ? prev : next;
+    });
+  };
+
+  const handlePoint = (page: number, imgX: number, imgY: number, isDrag: boolean) => {
+    const target = aimAt(page, imgX, imgY);
+    if (!target) return;
+    const staff = score.staves.find((s) => s.id === target.staff);
+    if (!staff) return;
+
+    const key = target.note ?? `${target.staff}:${target.y}`;
+    if (isDrag && lastSounded.current === key) return;
+    lastSounded.current = key;
+    showAim(target);
+    holdAim();
+
+    const note = target.note ? score.notes.find((n) => n.id === target.note) : null;
+    if (note) {
+      select(note.id);
+      setHeard({ note: note.id, label: noteName(note, staff, score) });
+      soundNote(note);
       return;
     }
 
-    // No notehead here — sound the pitch at this height anyway. This is what
-    // keeps the app usable where detection missed something.
-    const step = stepAt(staff, imgY);
-    const key = `${staff.id}:${step}`;
-    if (isDrag && lastSounded.current === key) return;
-    lastSounded.current = key;
+    const step = stepAt(staff, target.y);
     select(null);
-    setHeard({ note: null, label: stepToName(step, staff.clef, staffSharps(staff, score)) });
+    setHeard({ note: null, label: target.label });
     sound(stepToMidi(step, staff.clef, staffSharps(staff, score)));
   };
 
@@ -277,38 +406,35 @@ export default function Sheet() {
                       at: Date.now(),
                       moved: false,
                     };
+                    // Show what this touch would play, without playing it. The
+                    // note sounds on release, so there is a moment in between to
+                    // see whether the finger landed where it was aimed.
+                    const r = e.currentTarget.getBoundingClientRect();
+                    window.clearTimeout(aimTimer.current);
+                    showAim(
+                      aimAt(
+                        page.index,
+                        ((e.clientX - r.left) / r.width) * page.width,
+                        ((e.clientY - r.top) / r.height) * page.height,
+                      ),
+                    );
                   }}
                   onPointerMove={(e) => {
-                    if (e.pointerType !== 'mouse') {
-                      const t = tap.current;
-                      if (
-                        t &&
-                        t.id === e.pointerId &&
-                        Math.hypot(e.clientX - t.x, e.clientY - t.y) > 9
-                      )
-                        t.moved = true;
-                      return;
-                    }
                     const r = e.currentTarget.getBoundingClientRect();
                     const ix = ((e.clientX - r.left) / r.width) * page.width;
                     const iy = ((e.clientY - r.top) / r.height) * page.height;
-                    if (dragging.current) handlePoint(page.index, ix, iy, true);
-                    else {
-                      const staff = staffAt(page.index, iy);
-                      setHover(
-                        staff
-                          ? {
-                              x: e.clientX - r.left,
-                              y: e.clientY - r.top,
-                              label: stepToName(
-                                stepAt(staff, iy),
-                                staff.clef,
-                                staffSharps(staff, score),
-                              ),
-                            }
-                          : null,
-                      );
+                    if (e.pointerType !== 'mouse') {
+                      const t = tap.current;
+                      if (!t || t.id !== e.pointerId) return;
+                      if (Math.hypot(e.clientX - t.x, e.clientY - t.y) > 9) {
+                        // The finger is travelling: this is a scroll, not a tap.
+                        t.moved = true;
+                        clearAim();
+                      } else showAim(aimAt(page.index, ix, iy));
+                      return;
                     }
+                    if (dragging.current) handlePoint(page.index, ix, iy, true);
+                    else showAim(aimAt(page.index, ix, iy));
                   }}
                   onPointerUp={(e) => {
                     if (e.pointerType === 'mouse') {
@@ -319,7 +445,10 @@ export default function Sheet() {
                     // A tap: barely moved, and let go rather than held.
                     const t = tap.current;
                     tap.current = null;
-                    if (!t || t.id !== e.pointerId || t.moved || Date.now() - t.at > 700) return;
+                    if (!t || t.id !== e.pointerId || t.moved || Date.now() - t.at > 700) {
+                      clearAim();
+                      return;
+                    }
                     const r = e.currentTarget.getBoundingClientRect();
                     lastSounded.current = null;
                     handlePoint(
@@ -334,10 +463,14 @@ export default function Sheet() {
                   onPointerCancel={() => {
                     tap.current = null;
                     dragging.current = false;
+                    clearAim();
                   }}
-                  onPointerLeave={() => {
+                  /* A touch pointer stops existing the moment it lifts, so the
+                     browser fires leave straight after up. Clearing the marker
+                     there would wipe it in the same frame it was earned. */
+                  onPointerLeave={(e) => {
                     dragging.current = false;
-                    setHover(null);
+                    if (e.pointerType === 'mouse') clearAim();
                   }}
                 >
                   {/* A faint band per staff, so it is obvious the page is live. */}
@@ -353,44 +486,69 @@ export default function Sheet() {
                     />
                   ))}
 
-                  {showNotes &&
-                    notes.map((n) => {
-                      const staff = staves.find((s) => s.id === n.staff);
-                      if (!staff) return null;
-                      const on = selected === n.id;
-                      const edited =
-                        (score.nudges[n.id] ?? 0) !== 0 || n.id in (score.alters ?? {});
-                      return (
+                  {showNotes && (
+                    <Dots notes={notes} staves={staves} score={score} selected={selected} />
+                  )}
+
+                  {/* Where a tap would land, and what it would sound. On a
+                      notehead it is a ring around that head; on bare staff it is
+                      a ghost sitting on the exact line or space that will play,
+                      which is the difference between missing and knowing you
+                      missed. The shapes scale with the music, because they have
+                      to line up with it; their strokes do not, because a marker
+                      drawn a fifth of a pixel wide marks nothing. */}
+                  {aim && aim.page === page.index && (
+                    <g
+                      data-aim={aim.note ? 'note' : 'staff'}
+                      className="pointer-events-none"
+                      stroke="rgb(var(--pink))"
+                      fill="none"
+                      strokeWidth={2.4}
+                      strokeLinecap="round"
+                      vectorEffect="non-scaling-stroke"
+                    >
+                      {aim.note ? (
                         <ellipse
-                          key={n.id}
-                          cx={n.x}
-                          cy={n.y}
-                          rx={staff.spacing * 0.78}
-                          ry={staff.spacing * 0.6}
-                          fill={
-                            on
-                              ? 'rgb(var(--pink))'
-                              : edited
-                                ? 'rgb(var(--gold))'
-                                : 'rgb(var(--blue))'
-                          }
-                          opacity={on ? 0.5 : edited ? 0.36 : 0.16}
+                          cx={aim.x}
+                          cy={aim.y}
+                          rx={aim.radius * 1.05}
+                          ry={aim.radius * 0.82}
+                          vectorEffect="non-scaling-stroke"
                         />
-                      );
-                    })}
+                      ) : (
+                        <>
+                          <line
+                            x1={aim.x - aim.radius * 1.7}
+                            x2={aim.x + aim.radius * 1.7}
+                            y1={aim.y}
+                            y2={aim.y}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                          <ellipse
+                            cx={aim.x}
+                            cy={aim.y}
+                            rx={aim.radius * 0.62}
+                            ry={aim.radius * 0.46}
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        </>
+                      )}
+                    </g>
+                  )}
                 </svg>
 
-                {hover && (
+                {/* The name, at a size you can read whatever the zoom. */}
+                {aim && aim.page === page.index && (
                   <div
-                    className="pointer-events-none absolute z-10 rounded-sm px-1.5 py-0.5 font-mono text-[11px]"
+                    className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-full whitespace-nowrap rounded-sm px-1.5 py-0.5 font-display text-[12px] font-bold leading-tight"
                     style={{
-                      left: hover.x + 12,
-                      top: hover.y - 10,
-                      background: 'rgb(var(--ink))',
-                      color: 'rgb(var(--paper))',
+                      left: `${(aim.x / page.width) * 100}%`,
+                      top: `${((aim.y - aim.radius * 1.3) / page.height) * 100}%`,
+                      background: 'rgb(var(--pink))',
+                      color: '#fff',
                     }}
                   >
-                    {hover.label}
+                    {aim.label}
                   </div>
                 )}
               </div>

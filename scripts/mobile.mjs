@@ -142,10 +142,21 @@ else {
     window.__heard = 0;
   });
   await touch('touchStart', spot.x, spot.y);
+  await page.waitForTimeout(120);
+  // The note sounds on release, so between landing and lifting there is a
+  // moment to see what the finger is actually on. Without that, aiming is
+  // something you only find out about by hearing the wrong note.
+  const previewed = await page.locator('[data-aim]').count();
+  const silentSoFar = await page.evaluate(() => window.__heard);
   await touch('touchEnd', spot.x, spot.y);
   await page.waitForTimeout(400);
   const heard = await page.evaluate(() => window.__heard);
+  check('a finger down shows what it is aiming at', previewed === 1 && silentSoFar === 0);
   check('a tap on a notehead sounds it', heard === 1, `${heard} sounded`);
+  check(
+    'and the target is still marked afterwards',
+    (await page.locator('[data-aim]').count()) === 1,
+  );
 }
 
 // Zoom reaches the page, and the zoomed page pans sideways.

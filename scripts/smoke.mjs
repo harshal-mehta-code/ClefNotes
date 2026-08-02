@@ -157,6 +157,52 @@ check('clicking selects the note for correction', selected != null);
 // The readout is the only way to tell whether the app agrees with the page.
 check('the note that sounded is named on screen', (await page.locator('text=Heard').count()) === 1);
 
+// A tap does not have to be dead centre. Height decides the pitch, so a couple
+// of millimetres to the side is still obviously the same note — landing on the
+// bare staff instead used to sound something else entirely.
+const nearMiss = await page.evaluate(async () => {
+  const s = window.__cn.getState();
+  const sc = s.score;
+  const n = sc.notes[0];
+  const st = sc.staves.find((x) => x.id === n.staff);
+  const pg = sc.pages.find((p) => p.index === n.page);
+  const svg = document.querySelectorAll('main svg')[sc.pages.indexOf(pg)];
+  const r = svg.getBoundingClientRect();
+  const at = (dx, dy) => ({
+    clientX: r.left + ((n.x + dx) / pg.width) * r.width,
+    clientY: r.top + ((n.y + dy) / pg.height) * r.height,
+  });
+  const hits = [];
+  for (const [dx, dy] of [
+    [0, 0],
+    [st.spacing * 1.6, 0],
+    [-st.spacing * 1.6, 0],
+    [0, st.spacing * 0.4],
+    [0, -st.spacing * 0.4],
+  ]) {
+    s.select(null);
+    const p = at(dx, dy);
+    svg.dispatchEvent(
+      new PointerEvent('pointerdown', { ...p, pointerId: 1, pointerType: 'mouse', bubbles: true }),
+    );
+    svg.dispatchEvent(
+      new PointerEvent('pointerup', { ...p, pointerId: 1, pointerType: 'mouse', bubbles: true }),
+    );
+    await new Promise((r2) => setTimeout(r2, 60));
+    hits.push(window.__cn.getState().selected === n.id);
+  }
+  return hits;
+});
+check(
+  'a tap slightly off a notehead still hits it',
+  nearMiss.every(Boolean),
+  `${nearMiss.filter(Boolean).length} of ${nearMiss.length} offsets`,
+);
+check(
+  'and the note it would play is marked on the page',
+  (await page.locator('[data-aim="note"]').count()) > 0,
+);
+
 // Clicking bare staff still gives the right pitch — the safety net for a
 // notehead the detector missed.
 await page.evaluate(() => window.__cn.getState().select(null));
