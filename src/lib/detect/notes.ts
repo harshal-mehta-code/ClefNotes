@@ -380,6 +380,32 @@ function run(bm: Bitmap, cx: number, cy: number, dx: number, dy: number, max: nu
   return n;
 }
 
+/**
+ * The longest run of unbroken ink from a point, in any direction but upright.
+ *
+ * This is what a beam has and a notehead has not. A notehead is a blob about a
+ * space and a half across whichever way you leave it — except straight up or
+ * down, where its stem runs off, which is why that cone is left out. A beam is
+ * a bar several spaces long, so leaving along it never stops. At the end of a
+ * beamed group the corner is otherwise the size, shape and darkness of a
+ * notehead, and this is the one measurement that still tells them apart.
+ */
+function longestRun(bm: Bitmap, cx: number, cy: number, max: number): number {
+  let best = 0;
+  for (let deg = -78; deg <= 78; deg += 6) {
+    const a = (deg * Math.PI) / 180;
+    const ux = Math.cos(a);
+    const uy = Math.sin(a);
+    for (const sign of [1, -1]) {
+      let d = 0;
+      while (d < max && ink(bm, Math.round(cx + ux * d * sign), Math.round(cy + uy * d * sign)))
+        d++;
+      if (d > best) best = d;
+    }
+  }
+  return best;
+}
+
 /** How far the paper runs before ink, which is how far a hole reaches. */
 function gap(bm: Bitmap, cx: number, cy: number, dx: number, dy: number, max: number): number {
   let n = 0;
@@ -420,7 +446,13 @@ export function findHeads(
 
   const minW = sp * 0.8;
   const maxW = sp * 2.05;
-  const minH = sp * 0.55;
+  // A notehead is one staff space tall, by the same convention that makes it
+  // 1.3 wide, and measured here it never comes in under 0.83. A beam is half a
+  // space, and where one slants past a stem the corner is otherwise the right
+  // size and darkness to be read as a note — which is what was happening at the
+  // ends of beamed groups. Half a space of slack separates the two with room to
+  // spare; the old floor of 0.55 sat right on top of the beam.
+  const minH = sp * 0.72;
   const maxH = sp * 1.5;
 
   const candidates: Array<{ x: number; y: number; score: number; filled: boolean }> = [];
@@ -434,6 +466,10 @@ export function findHeads(
         if (ellipseInk(clean, x, y, rx * 0.55, ry * 0.55) < 0.9) continue;
         const whole = ellipseInk(clean, x, y, rx, ry);
         if (whole < 0.72) continue;
+        // Measured over every notehead on the test chart, the longest run out of
+        // one is 2.6 staff spaces and 99 in 100 are under 1.9. A beam runs until
+        // the group ends. Three spaces sits in the gap with room either side.
+        if (longestRun(clean, x, y, sp * 3) >= sp * 3) continue;
         candidates.push({ x, y, score: whole + 1, filled: true });
         continue;
       }

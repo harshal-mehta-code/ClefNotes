@@ -12,6 +12,9 @@
  */
 
 import { chromium } from 'playwright';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const BASE = process.env.BASE_URL ?? 'http://localhost:4173';
 const CHROME = process.env.CHROME ?? undefined;
@@ -566,6 +569,87 @@ check(
 );
 
 check('the keyboard is on screen', (await page.locator('canvas').count()) >= 1);
+// A beam is the one thing on a page that is the right size and darkness to be
+// read as a notehead: where it slants past a stem, the corner at the end of a
+// beamed group is about a space wide and, at the old floor, tall enough to
+// pass. So here is a page with beams and stems on it and no noteheads at all —
+// anything found on it is found wrongly.
+const beamPage = path.join(os.tmpdir(), `clefnotes-beams-${Date.now()}.png`);
+fs.writeFileSync(
+  beamPage,
+  Buffer.from(
+    await page.evaluate(() => {
+      const sp = 16;
+      const c = document.createElement('canvas');
+      c.width = 1400;
+      // Tall enough that the local-average thresholder averages over paper
+      // rather than over the bar it is standing on — the same reason its
+      // window is a fraction of the page rather than a fixed number of pixels.
+      c.height = 1200;
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, c.width, c.height);
+      g.fillStyle = '#000';
+      for (let i = 0; i < 5; i++) g.fillRect(40, 520 + i * sp, 1320, 2);
+
+      // Beamed groups at several slants and thicknesses, with the stems that
+      // make the corners. A real rasteriser softens the edges and the
+      // thresholder then reads them a shade fatter, which is what took a beam
+      // over the old floor, so the same softening is applied here.
+      g.filter = 'blur(0.7px)';
+      const group = (x0, x1, y0, y1, thick) => {
+        g.fillRect(x0, 528, 2.6, y0 - 528);
+        g.fillRect(x1, 528, 2.6, y1 - 528);
+        g.beginPath();
+        g.moveTo(x0, y0);
+        g.lineTo(x1, y1);
+        g.lineTo(x1, y1 + thick);
+        g.lineTo(x0, y0 + thick);
+        g.closePath();
+        g.fill();
+      };
+      // Shallow beams are already rejected for running too far sideways; the
+      // ones that got through are steep, where a row crosses the bar in about
+      // the width of a notehead.
+      group(220, 380, 570, 618, sp * 0.5);
+      group(450, 610, 618, 566, sp * 0.58);
+      group(690, 850, 568, 620, sp * 0.64);
+      group(930, 1090, 620, 568, sp * 0.7);
+      group(1160, 1330, 572, 616, sp * 0.55);
+      g.filter = 'none';
+      return c.toDataURL('image/png').split(',')[1];
+    }),
+    'base64',
+  ),
+);
+await page.evaluate(() => window.__cn.getState().closeScore());
+await page.locator('input[type=file]').first().setInputFiles(beamPage);
+let beamRead = null;
+for (let i = 0; i < 60; i++) {
+  beamRead = await page.evaluate(() => {
+    const s = window.__cn.getState();
+    return {
+      loading: s.loading,
+      error: s.error,
+      staves: s.score?.staves.length ?? 0,
+      notes: s.score?.notes.length ?? 0,
+    };
+  });
+  if (beamRead.error || (!beamRead.loading && beamRead.staves > 0)) break;
+  await page.waitForTimeout(500);
+}
+fs.unlinkSync(beamPage);
+check(
+  'a page of beams and stems is read as a staff',
+  !beamRead.error && beamRead.staves === 1,
+  beamRead.error ?? `${beamRead.staves} staves`,
+);
+check(
+  'and no noteheads are found in the beams',
+  beamRead.notes === 0,
+  `${beamRead.notes} imagined`,
+);
+
 check('no console errors', errors.length === 0, errors.slice(0, 2).join(' | '));
 
 await browser.close();

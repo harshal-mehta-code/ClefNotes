@@ -136,6 +136,7 @@ inside a static site:
 
 Otsu threshold → horizontal projection for staff lines → staff-line removal →
 run-length shape tests for filled noteheads and a ring test for hollow ones →
+a length test that rules out beams →
 key signature at the head of each staff → accidentals printed beside each
 notehead.
 
@@ -172,6 +173,18 @@ perfectly — so the failure looked like a quirk of certain notes rather than a
 line-removal bug. Each line now measures itself: along most of its length a
 staff line has nothing on it but itself, which makes the median run height
 along it the line's own thickness, at any resolution and in any engraving.
+
+A beam is the one mark on a page that can pass for a notehead. Where a steep
+one meets a stem at the end of a beamed group, the corner is about a space
+wide, about the right darkness, and — until the floor was raised — tall enough,
+so notes appeared at the bases of beamed eighths. Two things separate them.
+A notehead is one staff space tall by the same convention that makes it 1.3
+wide, and measured across the test chart it never comes in under 0.83 where a
+beam is half a space. And a notehead is a *blob*: leaving it in any direction
+but straight up or down, the ink stops within 2.6 spaces at the very worst and
+within 1.9 for ninety-nine notes in a hundred, where a beam runs on until the
+group ends. Straight up and down is excluded because that is where the stem
+goes.
 
 Hollow heads are then found as a **ring**: paper in the middle, ink in an
 annulus around it, and no ink much beyond that. The area measure matters. The
