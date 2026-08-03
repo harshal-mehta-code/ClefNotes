@@ -219,3 +219,41 @@ export async function templates(b64: string, pageIndex: number) {
     return { exemplars: t.exemplars, png: c.toDataURL('image/png') };
   });
 }
+
+/** The photograph path, stage by stage. */
+export async function readPhoto(b64: string, name = 'photo.jpg') {
+  const m: any = await import('../src/lib/detect/notes');
+  const { renderPhoto } = await import('../src/lib/detect/photo');
+  const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const file = new File([bin], name, { type: 'image/jpeg' });
+  const t0 = performance.now();
+  const canvas = await renderPhoto(file);
+  const rendered = Math.round(performance.now() - t0);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const out: any = { rendered, w: canvas.width, h: canvas.height };
+  for (const local of [true, false]) {
+    const bm = m.toBitmap(image, local);
+    const staves = m.findStaves(bm);
+    out[local ? 'local' : 'global'] = {
+      staves: staves.length,
+      spacings: staves.slice(0, 4).map((s: any) => Math.round(s.spacing * 10) / 10),
+      ink: bm.data.reduce((a: number, b: number) => a + b, 0) / bm.data.length,
+    };
+    if (local) {
+      const c2 = document.createElement('canvas');
+      c2.width = bm.w;
+      c2.height = bm.h;
+      const g2 = c2.getContext('2d')!;
+      const im2 = g2.createImageData(bm.w, bm.h);
+      for (let p = 0; p < bm.data.length; p++) {
+        const v = bm.data[p] ? 0 : 255;
+        im2.data[p * 4] = im2.data[p * 4 + 1] = im2.data[p * 4 + 2] = v;
+        im2.data[p * 4 + 3] = 255;
+      }
+      g2.putImageData(im2, 0, 0);
+      out.bitmap = c2.toDataURL('image/png');
+    }
+  }
+  return out;
+}

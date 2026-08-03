@@ -104,8 +104,47 @@ await page.evaluate(() => {
     },
   });
 });
+/**
+ * There has to be somewhere to scroll to before scrolling can be checked.
+ *
+ * A single page at phone width fits the screen exactly — scrollHeight equals
+ * clientHeight — so the swipe had nothing to move and the check failed on a
+ * score rather than on a fault. Zooming in gives the page somewhere to go, and
+ * it is also the state a phone is actually read in, nobody having ever squinted
+ * at four staves in a 390-pixel column by choice. The zoom is wound back
+ * afterwards so the later checks start where they expect to.
+ */
+const zoomSteps = await page.evaluate(async () => {
+  const main = document.querySelector('main');
+  const fits = () => main.scrollHeight <= main.clientHeight + 100;
+  let steps = 0;
+  while (fits() && steps < 3) {
+    document.querySelector('[aria-label="Zoom in"]').click();
+    await new Promise((r) => setTimeout(r, 400));
+    steps++;
+  }
+  main.scrollTop = 0;
+  return steps;
+});
 const beforeScroll = await page.evaluate(() => document.querySelector('main').scrollTop);
-await swipe(195, 600, 200);
+/**
+ * Driven through the browser's own gesture synthesiser rather than by
+ * dispatching touch events one at a time.
+ *
+ * Scrolling is not done in JavaScript — the compositor does it, from the raw
+ * input stream, and events posted straight into the page never reach it. So a
+ * hand-rolled swipe leaves the page exactly where it was and the check failed
+ * on a feature that has always worked. The synthesiser posts real input, which
+ * both scrolls the page and still reaches our own touch handlers, so the
+ * silence this also checks for is still worth something.
+ */
+await cdp.send('Input.synthesizeScrollGesture', {
+  x: 195,
+  y: 600,
+  yDistance: -400,
+  gestureSourceType: 'touch',
+  speed: 800,
+});
 await page.waitForTimeout(500);
 const afterScroll = await page.evaluate(() => document.querySelector('main').scrollTop);
 const rang = await page.evaluate(() => window.__heard);
@@ -115,6 +154,11 @@ check(
   `${beforeScroll} → ${afterScroll}`,
 );
 check('swiping past the notes stays silent', rang === 0, `${rang} notes sounded`);
+await page.evaluate(async (steps) => {
+  for (let i = 0; i < steps; i++) document.querySelector('[aria-label="Zoom out"]').click();
+  await new Promise((r) => setTimeout(r, 400));
+  document.querySelector('main').scrollTop = 0;
+}, zoomSteps);
 
 // A tap on a notehead sounds it.
 const spot = await page.evaluate(() => {

@@ -270,18 +270,36 @@ const run = await page.evaluate(() => {
   const notes = sc.notes.filter((n) => n.staff === st.id).sort((a, b) => a.x - b.x);
   const span = notes.slice(0, 8);
   // Noteheads stacked at the same moment are one event, not several.
-  let columns = 1;
+  const columns = [[span[0]]];
   for (let i = 1; i < span.length; i++) {
-    if (Math.abs(span[i].x - span[i - 1].x) >= st.spacing * 0.8) columns++;
+    const here = columns[columns.length - 1];
+    if (Math.abs(span[i].x - here[0].x) < st.spacing * 0.8) here.push(span[i]);
+    else columns.push([span[i]]);
   }
+
+  /**
+   * Traced along where each voice is *printed*, which is not the same as along
+   * the top and bottom of the staff.
+   *
+   * Taking the staff's own edges was the obvious thing and it was wrong: the
+   * two voices of a barbershop stave both sit low, the second of them a couple
+   * of spaces below the bottom line, so a finger at the bottom edge is still
+   * nearer to the upper voice than to the lower one and duly hears it. The test
+   * then failed while the app was doing exactly what it promises — a finger
+   * follows the notes it can see, and these are where they are.
+   */
+  const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  const stacked = columns.filter((c) => c.length > 1);
+  const rows = (pick) => mean(stacked.map((c) => pick([...c].sort((a, b) => a.y - b.y)).y));
   const pg = sc.pages.find((p) => p.index === st.page);
   return {
     ordinal: sc.pages.indexOf(pg),
-    columns,
+    columns: columns.length,
+    voices: stacked.length,
     from: span[0].x / pg.width,
     to: span[span.length - 1].x / pg.width,
-    high: (st.top - st.spacing * 0.5) / pg.height,
-    low: (st.bottom + st.spacing * 0.5) / pg.height,
+    high: (stacked.length ? rows((c) => c[0]) : st.top) / pg.height,
+    low: (stacked.length ? rows((c) => c[c.length - 1]) : st.bottom) / pg.height,
   };
 });
 const runSvg = page.locator('main svg').nth(run.ordinal);
@@ -328,8 +346,10 @@ check(
 check('and a playhead shows where the glide has reached', upper.playhead === 1);
 check(
   'the finger height picks the voice, where a staff carries two',
-  mean(upper.heard) > mean(lower.heard),
-  `high ${mean(upper.heard).toFixed(1)} · low ${mean(lower.heard).toFixed(1)}`,
+  !run.voices || mean(upper.heard) > mean(lower.heard),
+  run.voices
+    ? `high ${mean(upper.heard).toFixed(1)} · low ${mean(lower.heard).toFixed(1)}`
+    : 'no stacked voices on this staff',
 );
 
 // Correcting a pitch.// Correcting a pitch.
@@ -484,21 +504,44 @@ const rule = await page.evaluate(() => {
         s.soundNote(sc.notes.find((n) => n.id === id));
         return window.__cn.getState().ringing.at(-1);
       };
+      /**
+       * Which accidental to print, chosen so that it says something.
+       *
+       * A sharp on a note the key has already sharpened is not a change — it
+       * is the same pitch written twice — so testing with a sharp on a score
+       * in five sharps proves nothing and looks like a failure. The one to
+       * print is whichever moves this note off where the key put it.
+       */
+      s.setAlter(a.id, null);
+      const plain = hear(a.id);
+      s.setAlter(a.id, 1);
+      let alter = 1;
+      let shift = hear(a.id) - plain;
+      if (!shift) {
+        s.setAlter(a.id, -1);
+        alter = -1;
+        shift = hear(a.id) - plain;
+      }
+      if (!shift) continue;
+
       s.setAlter(a.id, null);
       const beforeSame = hear(later.id);
       const beforeNext = beyond ? hear(beyond.id) : null;
-      s.setAlter(a.id, 1);
+      s.setAlter(a.id, alter);
       const afterSame = hear(later.id);
       const afterNext = beyond ? hear(beyond.id) : null;
-      return { beforeSame, afterSame, beforeNext, afterNext, hasNext: !!beyond };
+      s.setAlter(a.id, null);
+      return { beforeSame, afterSame, beforeNext, afterNext, shift, hasNext: !!beyond };
     }
   }
   return null;
 });
 check(
   'an accidental carries to the rest of its bar',
-  rule != null && rule.afterSame === rule.beforeSame + 1,
-  rule ? `${rule.beforeSame} → ${rule.afterSame}` : 'no two notes share a line within a bar',
+  rule != null && rule.afterSame === rule.beforeSame + rule.shift,
+  rule
+    ? `${rule.beforeSame} → ${rule.afterSame} (${rule.shift > 0 ? '♯' : '♭'})`
+    : 'no two notes share a line within a bar',
 );
 check(
   'and stops at the barline',

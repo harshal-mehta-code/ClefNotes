@@ -76,16 +76,47 @@ function grey(
  * the staff entirely, which is why this matters more than it sounds.
  */
 function skewAngle(g: Uint8Array, w: number, h: number): number {
-  // Ink, by a rough global cut. The angle search only needs to know where the
-  // dark pixels are, not exactly which ones count.
-  let sum = 0;
-  for (let i = 0; i < g.length; i++) sum += g[i];
-  const cut = (sum / g.length) * 0.82;
+  /**
+   * Ink, against the average of the page around each pixel rather than against
+   * one number for the whole photograph.
+   *
+   * A single cut works on a scan and fails on a photo, and it fails in the way
+   * that matters most: a photograph has the world in it. The desk, the stand,
+   * the shadowed floor beyond the page are all darker than the paper, so a
+   * threshold taken over the whole frame calls the surroundings ink and the
+   * page — staff lines and all — paper. The angle search then measures the
+   * table. It answered zero degrees on every photograph it was given, which is
+   * the one answer that looks like success and does nothing, and the tilt went
+   * uncorrected into a stave-finder that cannot survive a degree of it.
+   *
+   * Comparing each pixel with its own surroundings removes the lighting and the
+   * furniture together, and leaves the printing: paper is flat over a few
+   * pixels, whatever it is lit by, and only something printed on it is not.
+   */
+  const sum = new Uint32Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let row = 0;
+    for (let x = 0; x < w; x++) {
+      row += g[y * w + x];
+      sum[(y + 1) * (w + 1) + x + 1] = sum[y * (w + 1) + x + 1] + row;
+    }
+  }
+  const r = Math.max(6, Math.round(Math.min(w, h) / 24));
   const xs: number[] = [];
   const ys: number[] = [];
   for (let y = 0; y < h; y++) {
+    const y0 = Math.max(0, y - r);
+    const y1 = Math.min(h - 1, y + r);
     for (let x = 0; x < w; x++) {
-      if (g[y * w + x] < cut) {
+      const x0 = Math.max(0, x - r);
+      const x1 = Math.min(w - 1, x + r);
+      const area = (x1 - x0 + 1) * (y1 - y0 + 1);
+      const total =
+        sum[(y1 + 1) * (w + 1) + x1 + 1] -
+        sum[y0 * (w + 1) + x1 + 1] -
+        sum[(y1 + 1) * (w + 1) + x0] +
+        sum[y0 * (w + 1) + x0];
+      if (g[y * w + x] * area * 100 < total * 88) {
         xs.push(x);
         ys.push(y);
       }
