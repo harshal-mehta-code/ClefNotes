@@ -3,8 +3,8 @@
 **Bring in a PDF, or photograph the page. Tap any note and hear it.**
 
 You get your own score back — the page exactly as it was printed — with every
-notehead made playable. Tap one to hear that pitch, and tap along a line to hear
-the phrase. Pick the instrument you want it in. A piano roll and a keyboard
+notehead made playable. Tap one to hear that pitch, or slide along a staff and
+hear the phrase run past under your finger. Pick the instrument you want it in. A piano roll and a keyboard
 underneath show what you are hearing.
 
 It is free, it runs entirely in the browser, and it needs no account, no server
@@ -34,10 +34,11 @@ is redrawn, so nothing can come out looking like a different piece.
 click, and that note sounds. The phrasing is yours, which is exactly right when
 you are working out how a line goes.
 
-**Where detection missed, pointing still works.** Click anywhere on a staff and
-you hear the pitch at that height, notehead or not. The safety net means a
-half-recognised page is still a useful page — but it is a safety net, not the
-main road: a tap lands on a notehead whenever one is plausibly what you meant.
+**Where detection missed, pointing still works.** Hold still anywhere on a
+staff and you hear the pitch at that height, notehead or not. The safety net
+means a half-recognised page is still a useful page — but it is reached on
+purpose rather than by accident, because a tap that lands between the notes and
+sounds a pitch nobody wrote is worse than a tap that does nothing.
 
 The whole model is: *position → pitch → sound.* That is one inference, and it is
 the one that is reliable.
@@ -51,18 +52,31 @@ camera button opens straight into it on a phone. Several photos become the
 pages of one score, since sheet music is rarely one page and that is how anyone
 would shoot it.
 
-**Aim, then hear.** A marker shows what a tap is about to play before it plays
-it — a ring around the notehead it will hit, or, where there is no note, a ghost
-sitting on the exact line or space that will sound, with the name beside it. On
-a phone the note sounds when your finger lifts, so the marker appears while it
-is still down and there is a moment to move it.
+**Three gestures, and holding still is the hinge.**
 
-Which note a tap means is decided by height, because height *is* the pitch: a
-tap anywhere within a notehead's own line or space is that notehead, and one a
-half-space high is a different note rather than a near miss. Sideways the target
-is far wider, since the next note along is further away than a fingertip is
-wide. Judging both directions alike, as this used to, meant a tap a couple of
-millimetres off the side fell through to bare staff and sounded something else.
+- **Tap** — plays the nearest notehead, and only a notehead. Which one is
+  decided by height, because height *is* the pitch: being close in pitch counts
+  for far more than being close along the line.
+- **Hold** — sounds the pitch at that exact line or space, note or no note.
+  This is the safety net for a notehead the detector missed, and it is behind a
+  hold because that is the one thing a scroll never does, so it cannot happen
+  by accident.
+- **Hold, then slide** — glides along the staff, playing the notes as they
+  pass. With a mouse, just press and drag.
+
+**Aim, then hear.** A marker shows what a gesture is about to play before it
+plays it — a ring around the notehead it will hit, or, where there is no note, a
+ghost sitting on the exact line or space that would sound, named, with `· hold`
+beside it to say how. On a phone the note sounds when your finger lifts, so the
+marker appears while it is still down and there is a moment to move.
+
+**Gliding, and two voices on one staff.** The speed of your hand is the tempo,
+so a phrase arrives as a shape rather than as a list, and the intervals come in
+order. Noteheads stacked at the same moment are one event with one note taken
+from it — the one nearest your finger — so tracing the upper line hears the
+upper line and a glide sounds like a line rather than a wash. A playhead follows
+the finger. Once a hold has taken the gesture over, the page stops scrolling
+under it, which is what makes this work on a phone at all.
 
 **The sheet.** Your page, page by page, with a transparent layer over it that
 knows where the staves and noteheads are. Detected notes carry a faint dot, so
@@ -309,6 +323,8 @@ src/
   is not, and that is the usual reason a photo finds no staves.
 - On a photograph, the counter of a lyric letter under the staff is occasionally
   read as a hollow notehead.
+- A glide follows one staff — the one it started on — so it does not run on
+  into the next system.
 - Grace notes, cue notes and small ossia staves are treated like anything else.
 - A tempo mark printed above the first staff can leave a note-shaped mark or
   two at the start of a piece.

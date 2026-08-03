@@ -37,8 +37,8 @@ export default function Library() {
         </h1>
         <p className="mt-3 max-w-[52ch] text-[16px] leading-snug text-ink2">
           Bring in a PDF, or photograph the page on the stand, and every note on it becomes
-          playable. Tap one to hear it, and tap along a line to hear the phrase. What you get back
-          is your own page, exactly as printed.
+          playable. Tap one to hear it; slide along a staff to hear the phrase run past. What you
+          get back is your own page, exactly as printed.
         </p>
       </header>
 
@@ -188,9 +188,13 @@ export default function Library() {
         <p className="max-w-[64ch] text-[13.5px] leading-snug text-ink3">
           Tapping a note names the pitch it is about to play, so you can check it against your page.
           If it disagrees, <b className="font-semibold">♭ ♮ ♯</b> say what is actually printed
-          there, and the clef and key in the margin beside each staff are one tap to change. If a
-          note was missed altogether, tap where it sits on the staff and you will still hear the
-          right pitch.
+          there, and the clef and key in the margin beside each staff are one tap to change.
+        </p>
+        <p className="max-w-[64ch] text-[13.5px] leading-snug text-ink3">
+          <b className="font-semibold">Slide along a staff</b> to hear a phrase in order — press,
+          hold for a moment, then glide. Where two voices share a staff, keep your finger high or
+          low and you follow that line. Holding still without sliding sounds the pitch at that exact
+          spot even where no note was found, which is how to play a notehead the app missed.
         </p>
         <p className="max-w-[64ch] text-[13.5px] leading-snug text-ink3">
           Photographs work when the page is square-on and filling the frame, in even light, with the

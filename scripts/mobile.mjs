@@ -175,6 +175,66 @@ check(
   `${Math.round(zoom.before)}px → ${Math.round(zoom.after)}px`,
 );
 check('a zoomed page pans sideways', zoom.pans);
+
+// Holding still is the one thing a scroll never does, so it is what unlocks
+// the two gestures a plain tap must not fire: a pitch where no note was found,
+// and taking the page over so a slide can play a phrase. The page is zoomed in
+// here on purpose — that is when a sideways drag would otherwise pan, and the
+// hold has to win.
+const spot2 = await page.evaluate(() => {
+  const sc = window.__cn.getState().score;
+  const svgs = [...document.querySelectorAll('main svg')];
+  for (const svg of svgs) {
+    const r = svg.getBoundingClientRect();
+    if (r.bottom < 160 || r.top > 640) continue;
+    const pg = sc.pages[svgs.indexOf(svg)];
+    for (const n of sc.notes.filter((x) => x.page === pg.index)) {
+      const y = r.top + (n.y / pg.height) * r.height;
+      const x = r.left + (n.x / pg.width) * r.width;
+      if (y > 180 && y < 620 && x > 20 && x < 200) return { x, y };
+    }
+  }
+  return null;
+});
+
+if (!spot2) check('holding still sounds the pitch under the finger', false, 'no note on screen');
+else {
+  await page.evaluate(() => {
+    window.__heard = 0;
+  });
+  await touch('touchStart', spot2.x, spot2.y);
+  await page.waitForTimeout(450);
+  await touch('touchEnd', spot2.x, spot2.y);
+  await page.waitForTimeout(300);
+  check(
+    'holding still sounds the pitch under the finger',
+    (await page.evaluate(() => window.__heard)) === 1,
+  );
+
+  const panBefore = await page.evaluate(() => document.querySelector('main').scrollLeft);
+  await page.evaluate(() => {
+    window.__heard = 0;
+  });
+  await touch('touchStart', spot2.x, spot2.y);
+  await page.waitForTimeout(450);
+  for (let i = 1; i <= 14; i++) {
+    await touch('touchMove', spot2.x + i * 12, spot2.y);
+    await page.waitForTimeout(25);
+  }
+  const midGlide = await page.locator('[data-playhead]').count();
+  await touch('touchEnd', spot2.x + 168, spot2.y);
+  await page.waitForTimeout(300);
+  const glided = await page.evaluate(() => window.__heard);
+  const panAfter = await page.evaluate(() => document.querySelector('main').scrollLeft);
+  check('holding then sliding plays the notes it passes', glided >= 2, `${glided} notes`);
+  check('with a playhead following the finger', midGlide === 1);
+  check(
+    'and the page does not pan out from under it',
+    panAfter === panBefore,
+    `${panBefore} → ${panAfter}`,
+  );
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 2).join(' | '));
 
 if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });

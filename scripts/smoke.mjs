@@ -203,20 +203,133 @@ check(
   (await page.locator('[data-aim="note"]').count()) > 0,
 );
 
-// Clicking bare staff still gives the right pitch — the safety net for a
-// notehead the detector missed.
-await page.evaluate(() => window.__cn.getState().select(null));
-const before = await page.evaluate(() => window.__cn.getState().ringing.length);
-await svg.click({ position: { x: box.width * 0.62, y: box.height * first.y } });
-const staffPeak = await level();
-const after = await page.evaluate(() => window.__cn.getState().ringing.length);
+// A pitch where no note was found is still reachable, but only on purpose.
+// Landing on one by accident, between the notes, was the commonest way to be
+// surprised by this app — so a plain click there now shows the spot and says
+// nothing, and alt (a press held still, on a phone) is what sounds it.
+const empty = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const sc = s.score;
+  for (const st of sc.staves) {
+    const notes = sc.notes.filter((n) => n.staff === st.id);
+    if (!notes.length) continue;
+    const pg = sc.pages.find((p) => p.index === st.page);
+    const ordinal = sc.pages.indexOf(pg);
+    const svg = document.querySelectorAll('main svg')[ordinal];
+    if (!svg) continue;
+    // Well clear of every notehead, but still on the staff.
+    for (let x = st.left + st.spacing * 6; x < st.right; x += st.spacing) {
+      for (const y of [st.top, st.lines[2], st.bottom]) {
+        const clear = notes.every(
+          (n) => Math.abs(n.y - y) > st.spacing * 1.8 || Math.abs(n.x - x) > st.spacing * 3.2,
+        );
+        if (clear) return { ordinal, x: x / pg.width, y: y / pg.height };
+      }
+    }
+  }
+  return null;
+});
+
+if (!empty) check('a plain click between the notes stays silent', false, 'nowhere empty enough');
+else {
+  const overlay = page.locator('main svg').nth(empty.ordinal);
+  await overlay.scrollIntoViewIfNeeded();
+  const eb = await overlay.boundingBox();
+  const at = { x: eb.x + eb.width * empty.x, y: eb.y + eb.height * empty.y };
+
+  const rangCount = () => page.evaluate(() => window.__cn.getState().ringing.length);
+  const quietBefore = await rangCount();
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  check('a plain click between the notes stays silent', (await rangCount()) === quietBefore);
+  check(
+    'and it still shows the pitch it would have played',
+    (await page.locator('[data-aim="staff"]').count()) === 1,
+  );
+
+  await page.keyboard.down('Alt');
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+  await page.waitForTimeout(300);
+  check('holding alt sounds the pitch there', (await rangCount()) > quietBefore);
+}
+
+// Gliding along a staff plays the notes as they pass, which is the only way to
+// hear a phrase as a shape rather than as a list. Where two voices share a
+// staff — most of choral music — the finger's height picks between them, so
+// tracing the upper line hears the upper line.
+const run = await page.evaluate(() => {
+  const sc = window.__cn.getState().score;
+  const st = sc.staves.find((x) => sc.notes.filter((n) => n.staff === x.id).length >= 6);
+  const notes = sc.notes.filter((n) => n.staff === st.id).sort((a, b) => a.x - b.x);
+  const span = notes.slice(0, 8);
+  // Noteheads stacked at the same moment are one event, not several.
+  let columns = 1;
+  for (let i = 1; i < span.length; i++) {
+    if (Math.abs(span[i].x - span[i - 1].x) >= st.spacing * 0.8) columns++;
+  }
+  const pg = sc.pages.find((p) => p.index === st.page);
+  return {
+    ordinal: sc.pages.indexOf(pg),
+    columns,
+    from: span[0].x / pg.width,
+    to: span[span.length - 1].x / pg.width,
+    high: (st.top - st.spacing * 0.5) / pg.height,
+    low: (st.bottom + st.spacing * 0.5) / pg.height,
+  };
+});
+const runSvg = page.locator('main svg').nth(run.ordinal);
+await runSvg.scrollIntoViewIfNeeded();
+const rb = await runSvg.boundingBox();
+
+const glideAlong = async (yFrac) => {
+  await page.evaluate(() => {
+    window.__run = [];
+    const real = window.__cn.getState().sound;
+    window.__realSound = real;
+    window.__cn.setState({
+      sound: (m) => {
+        window.__run.push(m);
+        real(m);
+      },
+    });
+  });
+  const y = rb.y + rb.height * yFrac;
+  await page.mouse.move(rb.x + rb.width * run.from, y);
+  await page.mouse.down();
+  let playhead = 0;
+  for (let i = 1; i <= 16; i++) {
+    await page.mouse.move(rb.x + rb.width * (run.from + ((run.to - run.from) * i) / 16), y);
+    await page.waitForTimeout(25);
+    playhead = Math.max(playhead, await page.locator('[data-playhead]').count());
+  }
+  await page.mouse.up();
+  const heard = await page.evaluate(() => {
+    window.__cn.setState({ sound: window.__realSound });
+    return window.__run;
+  });
+  return { heard, playhead };
+};
+
+const upper = await glideAlong(run.high);
+const lower = await glideAlong(run.low);
+const mean = (xs) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
 check(
-  'clicking bare staff sounds the pitch there',
-  staffPeak > 0.005 || after > before,
-  `peak ${staffPeak.toFixed(4)}`,
+  'dragging along a staff plays the notes in turn',
+  upper.heard.length >= run.columns - 1,
+  `${upper.heard.length} notes over ${run.columns} moments`,
+);
+check('and a playhead shows where the glide has reached', upper.playhead === 1);
+check(
+  'the finger height picks the voice, where a staff carries two',
+  mean(upper.heard) > mean(lower.heard),
+  `high ${mean(upper.heard).toFixed(1)} · low ${mean(lower.heard).toFixed(1)}`,
 );
 
-// Correcting a pitch.
+// Correcting a pitch.// Correcting a pitch.
 await page.evaluate(() => {
   const s = window.__cn.getState();
   s.select(s.score.notes[0].id);

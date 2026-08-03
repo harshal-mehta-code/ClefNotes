@@ -119,15 +119,38 @@ export default function Sheet() {
     prev: Record<string, ClefId>;
   } | null>(null);
 
-  /** A mouse press, which sounds as it moves. Touch never gets here. */
+  /** A mouse press, which glides as it moves. Touch never gets here. */
   const dragging = useRef(false);
-  const lastSounded = useRef<string | null>(null);
   /**
-   * A finger on the page. Nothing sounds until it lifts, because until then
-   * there is no telling a tap from the start of a scroll — and sounding on the
-   * way past is how a page turn ends up playing four notes you did not want.
+   * A finger on the page.
+   *
+   * Nothing sounds until it lifts or until it has been still long enough to be
+   * deliberate, because until then there is no telling a tap from the start of
+   * a scroll — and sounding on the way past is how a page turn ends up playing
+   * four notes you did not want. Holding still is what the page cannot mistake
+   * for anything else, so that is what unlocks the two things a plain tap must
+   * not do: sound a pitch where no note was found, and take the gesture over
+   * from the scroller so a slide can play a phrase.
    */
-  const tap = useRef<{ id: number; x: number; y: number; at: number; moved: boolean } | null>(null);
+  const press = useRef<{
+    id: number;
+    x: number;
+    y: number;
+    page: number;
+    at: number;
+    moved: boolean;
+    held: boolean;
+    glided: boolean;
+  } | null>(null);
+  const holdTimer = useRef<number | undefined>(undefined);
+  const glide = useRef<{ page: number; staff: string; x: number } | null>(null);
+  /** Where the glide has reached, drawn across the staff. */
+  const [playhead, setPlayhead] = useState<{
+    page: number;
+    x: number;
+    top: number;
+    bottom: number;
+  } | null>(null);
 
   const stavesByPage = useMemo(() => {
     const map = new Map<number, DetectedStaff[]>();
@@ -167,6 +190,20 @@ export default function Sheet() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [nudgeSelected, select]);
+
+  // Once a hold has taken the gesture over, the page must not scroll out from
+  // under the finger. touch-action is decided when a gesture starts, so the only
+  // way to change our mind partway is to cancel the move itself — which needs a
+  // listener the browser will let say no.
+  useEffect(() => {
+    const el = viewport.current;
+    if (!el) return;
+    const stop = (e: TouchEvent) => {
+      if (press.current?.held) e.preventDefault();
+    };
+    el.addEventListener('touchmove', stop, { passive: false });
+    return () => el.removeEventListener('touchmove', stop);
+  }, []);
 
   // How much room there is to draw a page in.
   useEffect(() => {
@@ -242,15 +279,11 @@ export default function Sheet() {
   /**
    * What a point on the page means, before anything is played.
    *
-   * Height decides the pitch, so height decides which note: anywhere within a
-   * notehead's own line or space *is* that notehead, and a tap half a space
-   * high is a different pitch rather than a near miss. Sideways the target is
-   * much wider, because the next note along is further away than a fingertip is
-   * wide and there is nothing else the tap could have meant.
-   *
-   * Falling through to bare staff still works where a notehead was missed, but
-   * it is now what happens when there is genuinely nothing there, rather than
-   * what happens whenever a tap lands a couple of millimetres off.
+   * Height decides the pitch, so height decides which note: a tap is read as
+   * the nearest notehead, weighted so that being close in pitch counts for far
+   * more than being close along the line. Sideways the target is wide, because
+   * the next note along is further away than a fingertip and there is nothing
+   * else the tap could have meant.
    */
   const aimAt = (page: number, imgX: number, imgY: number): Aim | null => {
     const staff = staffAt(page, imgY);
@@ -263,10 +296,8 @@ export default function Sheet() {
       if (n.staff !== staff.id) continue;
       const dy = Math.abs(n.y - imgY);
       const dx = Math.abs(n.x - imgX);
-      if (dy > sp * 0.5 || dx > sp * 2.2) continue;
-      // Height first, and by a long way: sideways only breaks the tie between
-      // two notes that are equally on the line you tapped.
-      const score = dy * 4 + dx;
+      if (dy > sp * 1.8 || dx > sp * 3.2) continue;
+      const score = dy * 3 + dx;
       if (score < bestScore) {
         bestScore = score;
         best = n;
@@ -285,8 +316,8 @@ export default function Sheet() {
       };
     }
 
-    // Nothing there. The marker sits on the exact line or space that will
-    // sound, not where the finger landed, so a miss is visible as a miss.
+    // Nothing within reach. The marker sits on the exact line or space that
+    // *would* sound, so a miss is visible as a miss rather than heard as one.
     const step = stepAt(staff, imgY);
     return {
       page,
@@ -311,30 +342,126 @@ export default function Sheet() {
     });
   };
 
-  const handlePoint = (page: number, imgX: number, imgY: number, isDrag: boolean) => {
-    const target = aimAt(page, imgX, imgY);
-    if (!target) return;
-    const staff = score.staves.find((s) => s.id === target.staff);
-    if (!staff) return;
-
-    const key = target.note ?? `${target.staff}:${target.y}`;
-    if (isDrag && lastSounded.current === key) return;
-    lastSounded.current = key;
+  const land = (target: Aim, note: DetectedNote | null, staff: DetectedStaff) => {
     showAim(target);
     holdAim();
-
-    const note = target.note ? score.notes.find((n) => n.id === target.note) : null;
     if (note) {
       select(note.id);
       setHeard({ note: note.id, label: noteName(note, staff, score) });
       soundNote(note);
-      return;
+    } else {
+      select(null);
+      setHeard({ note: null, label: target.label });
+      sound(stepToMidi(stepAt(staff, target.y), staff.clef, staffSharps(staff, score)));
     }
+  };
 
-    const step = stepAt(staff, target.y);
-    select(null);
-    setHeard({ note: null, label: target.label });
-    sound(stepToMidi(step, staff.clef, staffSharps(staff, score)));
+  /**
+   * A tap. It plays a notehead and nothing else — landing between the notes and
+   * hearing a pitch nobody wrote was the commonest way to be surprised by this
+   * app. The pitch at an arbitrary spot is still there, on a press-and-hold,
+   * where it cannot happen by accident.
+   */
+  const tapAt = (page: number, imgX: number, imgY: number) => {
+    const target = aimAt(page, imgX, imgY);
+    if (!target) return;
+    const staff = score.staves.find((s) => s.id === target.staff);
+    if (!staff) return;
+    showAim(target);
+    holdAim();
+    if (!target.note) return; // shown, not sounded: the marker says why
+    land(target, score.notes.find((n) => n.id === target.note) ?? null, staff);
+  };
+
+  /** A press held still: the pitch at that exact line or space, whatever is there. */
+  const freeAt = (page: number, imgX: number, imgY: number) => {
+    const staff = staffAt(page, imgY);
+    if (!staff) return;
+    const step = stepAt(staff, imgY);
+    const target: Aim = {
+      page,
+      staff: staff.id,
+      note: null,
+      x: imgX,
+      y: staff.lines[4] - step * (staff.spacing / 2),
+      radius: staff.spacing,
+      label: stepToName(step, staff.clef, staffSharps(staff, score)),
+    };
+    land(target, null, staff);
+  };
+
+  /**
+   * Gliding along a staff, playing the notes as they pass.
+   *
+   * A phrase is a shape in time, and clicking one note at a time never quite
+   * gives you that. Dragging does: the speed of the hand is the tempo, and the
+   * intervals arrive in order.
+   *
+   * Where two voices share a staff, the finger's *height* chooses between them
+   * — trace the upper line and you hear the upper line. A chord is one event
+   * with one note taken from it, rather than a handful at once, which keeps a
+   * glide sounding like a line rather than like a wash.
+   */
+  const beginGlide = (page: number, imgX: number, imgY: number) => {
+    const staff = staffAt(page, imgY);
+    glide.current = staff ? { page, staff: staff.id, x: imgX } : null;
+    setPlayhead(
+      staff
+        ? {
+            page,
+            x: imgX,
+            top: staff.top - staff.spacing * 2.4,
+            bottom: staff.bottom + staff.spacing * 2.4,
+          }
+        : null,
+    );
+  };
+
+  const glideTo = (page: number, imgX: number, imgY: number) => {
+    const g = glide.current;
+    if (!g || g.page !== page) return;
+    const staff = score.staves.find((s) => s.id === g.staff);
+    if (!staff) return;
+    setPlayhead((p) => (p ? { ...p, x: imgX } : p));
+
+    const lo = Math.min(g.x, imgX);
+    const hi = Math.max(g.x, imgX);
+    g.x = imgX;
+    const crossed = (notesByPage.get(page) ?? [])
+      .filter((n) => n.staff === staff.id && n.x > lo && n.x <= hi)
+      .sort((a, b) => a.x - b.x);
+    if (!crossed.length) return;
+
+    // One note per column, the one nearest the finger.
+    const line: DetectedNote[] = [];
+    for (const n of crossed) {
+      const last = line[line.length - 1];
+      if (last && Math.abs(last.x - n.x) < staff.spacing * 0.8) {
+        if (Math.abs(n.y - imgY) < Math.abs(last.y - imgY)) line[line.length - 1] = n;
+        continue;
+      }
+      line.push(n);
+    }
+    for (const n of line) soundNote(n);
+
+    const last = line[line.length - 1];
+    select(last.id);
+    setHeard({ note: last.id, label: noteName(last, staff, score) });
+    showAim({
+      page,
+      staff: staff.id,
+      note: last.id,
+      x: last.x,
+      y: last.y,
+      radius: staff.spacing,
+      label: noteName(last, staff, score),
+    });
+  };
+
+  const endGlide = () => {
+    glide.current = null;
+    setPlayhead(null);
+    holdAim();
   };
 
   const heardNote = heard?.note ? score.notes.find((n) => n.id === heard.note) : null;
@@ -386,91 +513,110 @@ export default function Sheet() {
                   className="absolute inset-0 h-full w-full [touch-action:manipulation]"
                   style={{ cursor: 'pointer' }}
                   onPointerDown={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    const ix = ((e.clientX - r.left) / r.width) * page.width;
+                    const iy = ((e.clientY - r.top) / r.height) * page.height;
+
                     if (e.pointerType === 'mouse') {
                       (e.target as Element).setPointerCapture?.(e.pointerId);
                       dragging.current = true;
-                      lastSounded.current = null;
-                      const r = e.currentTarget.getBoundingClientRect();
-                      handlePoint(
-                        page.index,
-                        ((e.clientX - r.left) / r.width) * page.width,
-                        ((e.clientY - r.top) / r.height) * page.height,
-                        false,
-                      );
+                      // Alt is the desktop way to ask for a pitch where no note
+                      // was found; a plain press plays the note and starts a glide.
+                      if (e.altKey) freeAt(page.index, ix, iy);
+                      else {
+                        tapAt(page.index, ix, iy);
+                        beginGlide(page.index, ix, iy);
+                      }
                       return;
                     }
-                    tap.current = {
+
+                    press.current = {
                       id: e.pointerId,
                       x: e.clientX,
                       y: e.clientY,
+                      page: page.index,
                       at: Date.now(),
                       moved: false,
+                      held: false,
+                      glided: false,
                     };
-                    // Show what this touch would play, without playing it. The
-                    // note sounds on release, so there is a moment in between to
-                    // see whether the finger landed where it was aimed.
-                    const r = e.currentTarget.getBoundingClientRect();
+                    showAim(aimAt(page.index, ix, iy));
                     window.clearTimeout(aimTimer.current);
-                    showAim(
-                      aimAt(
-                        page.index,
-                        ((e.clientX - r.left) / r.width) * page.width,
-                        ((e.clientY - r.top) / r.height) * page.height,
-                      ),
-                    );
+                    window.clearTimeout(holdTimer.current);
+                    holdTimer.current = window.setTimeout(() => {
+                      const p = press.current;
+                      if (!p || p.moved) return;
+                      p.held = true;
+                      beginGlide(p.page, ix, iy);
+                    }, 300);
                   }}
                   onPointerMove={(e) => {
                     const r = e.currentTarget.getBoundingClientRect();
                     const ix = ((e.clientX - r.left) / r.width) * page.width;
                     const iy = ((e.clientY - r.top) / r.height) * page.height;
-                    if (e.pointerType !== 'mouse') {
-                      const t = tap.current;
-                      if (!t || t.id !== e.pointerId) return;
-                      if (Math.hypot(e.clientX - t.x, e.clientY - t.y) > 9) {
-                        // The finger is travelling: this is a scroll, not a tap.
-                        t.moved = true;
-                        clearAim();
-                      } else showAim(aimAt(page.index, ix, iy));
+
+                    if (e.pointerType === 'mouse') {
+                      if (dragging.current) glideTo(page.index, ix, iy);
+                      else showAim(aimAt(page.index, ix, iy));
                       return;
                     }
-                    if (dragging.current) handlePoint(page.index, ix, iy, true);
-                    else showAim(aimAt(page.index, ix, iy));
+
+                    const p = press.current;
+                    if (!p || p.id !== e.pointerId) return;
+                    if (p.held) {
+                      p.glided = true;
+                      glideTo(page.index, ix, iy);
+                      return;
+                    }
+                    if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 9) {
+                      // The finger is travelling: this is a scroll, not a tap.
+                      p.moved = true;
+                      window.clearTimeout(holdTimer.current);
+                      clearAim();
+                    } else showAim(aimAt(page.index, ix, iy));
                   }}
                   onPointerUp={(e) => {
+                    const r = e.currentTarget.getBoundingClientRect();
+                    const ix = ((e.clientX - r.left) / r.width) * page.width;
+                    const iy = ((e.clientY - r.top) / r.height) * page.height;
+
                     if (e.pointerType === 'mouse') {
                       dragging.current = false;
-                      lastSounded.current = null;
+                      endGlide();
                       return;
                     }
-                    // A tap: barely moved, and let go rather than held.
-                    const t = tap.current;
-                    tap.current = null;
-                    if (!t || t.id !== e.pointerId || t.moved || Date.now() - t.at > 700) {
+
+                    window.clearTimeout(holdTimer.current);
+                    const p = press.current;
+                    press.current = null;
+                    if (!p || p.id !== e.pointerId || p.moved) {
+                      endGlide();
                       clearAim();
                       return;
                     }
-                    const r = e.currentTarget.getBoundingClientRect();
-                    lastSounded.current = null;
-                    handlePoint(
-                      page.index,
-                      ((e.clientX - r.left) / r.width) * page.width,
-                      ((e.clientY - r.top) / r.height) * page.height,
-                      false,
-                    );
+                    // Held still and let go: the pitch at that spot, note or no
+                    // note. Held and slid: the phrase has already played.
+                    if (p.held && !p.glided) freeAt(page.index, ix, iy);
+                    else if (!p.held) tapAt(page.index, ix, iy);
+                    endGlide();
                   }}
                   /* The browser fires this the moment it decides the gesture is
-                     a scroll, which is precisely when the note should not play. */
+                     a scroll, which is precisely when nothing should play. */
                   onPointerCancel={() => {
-                    tap.current = null;
+                    press.current = null;
                     dragging.current = false;
+                    window.clearTimeout(holdTimer.current);
+                    endGlide();
                     clearAim();
                   }}
                   /* A touch pointer stops existing the moment it lifts, so the
                      browser fires leave straight after up. Clearing the marker
                      there would wipe it in the same frame it was earned. */
                   onPointerLeave={(e) => {
+                    if (e.pointerType !== 'mouse') return;
                     dragging.current = false;
-                    if (e.pointerType === 'mouse') clearAim();
+                    endGlide();
+                    clearAim();
                   }}
                 >
                   {/* A faint band per staff, so it is obvious the page is live. */}
@@ -488,6 +634,23 @@ export default function Sheet() {
 
                   {showNotes && (
                     <Dots notes={notes} staves={staves} score={score} selected={selected} />
+                  )}
+
+                  {/* Where the glide has reached. The speed of the hand is the
+                      tempo, so the line is the only clock there is. */}
+                  {playhead && playhead.page === page.index && (
+                    <line
+                      data-playhead=""
+                      className="pointer-events-none"
+                      x1={playhead.x}
+                      x2={playhead.x}
+                      y1={playhead.top}
+                      y2={playhead.bottom}
+                      stroke="rgb(var(--pink))"
+                      strokeWidth={2}
+                      opacity={0.55}
+                      vectorEffect="non-scaling-stroke"
+                    />
                   )}
 
                   {/* Where a tap would land, and what it would sound. On a
@@ -549,6 +712,16 @@ export default function Sheet() {
                     }}
                   >
                     {aim.label}
+                    {/* Nothing was found here, so a tap will not sound it. The
+                        way to hear it anyway is the one gesture a scroll can
+                        never be mistaken for, and saying so at the moment of
+                        confusion is the only place anyone would read it. */}
+                    {!aim.note && (
+                      <span className="ml-1 font-normal opacity-80">
+                        <span className="[@media(pointer:coarse)]:hidden">· alt</span>
+                        <span className="hidden [@media(pointer:coarse)]:inline">· hold</span>
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
