@@ -406,100 +406,472 @@ function longestRun(bm: Bitmap, cx: number, cy: number, max: number): number {
   return best;
 }
 
-/** How far the paper runs before ink, which is how far a hole reaches. */
-function gap(bm: Bitmap, cx: number, cy: number, dx: number, dy: number, max: number): number {
-  let n = 0;
-  let x = cx;
-  let y = cy;
-  while (n < max) {
-    x += dx;
-    y += dy;
-    if (ink(bm, x, y)) break;
-    n++;
+/**
+ * Fill in the holes that are small enough to be the inside of a notehead.
+ *
+ * This is the step that makes reading noteheads one problem instead of two.
+ * Before it, a filled head and a hollow head were looked for separately, by
+ * different tests — solid ink here, a ring of ink there — and the hollow test
+ * was the fragile one, because a rim is three or four pixels of ink that any
+ * threshold can break, and every gate it had to pass was another way to lose a
+ * half note. Whole half notes went unread on that account.
+ *
+ * But the two are the *same shape*. Only the middle differs, and the middle is
+ * a hole with a definite size: the inside of a notehead is smaller than the
+ * notehead. So enclosed paper of about that size is painted in, after which a
+ * half note is exactly as solid as a quarter note and one test finds both.
+ * Whether it was hollow is read afterwards, from the original ink — a property
+ * of a note that has already been found, rather than a hurdle in front of
+ * finding it.
+ *
+ * Holes too big to be a notehead's — the space inside a beamed group, the bowl
+ * of a clef — are left alone, which is what keeps them from becoming notes.
+ */
+export function fillHoles(bm: Bitmap, spacing: number): Bitmap {
+  const { w, h, data } = bm;
+  const out = new Uint8Array(data);
+
+  // Paper reachable from the edge of the page is the background; everything
+  // else is enclosed by ink. One flood from the border finds all of it.
+  const seen = new Uint8Array(w * h);
+  const stack: number[] = [];
+  for (let x = 0; x < w; x++) {
+    stack.push(x, x + (h - 1) * w);
   }
-  return n;
+  for (let y = 0; y < h; y++) {
+    stack.push(y * w, y * w + w - 1);
+  }
+  while (stack.length) {
+    const p = stack.pop()!;
+    if (seen[p] || data[p]) continue;
+    seen[p] = 1;
+    const x = p % w;
+    const y = (p - x) / w;
+    if (x > 0) stack.push(p - 1);
+    if (x < w - 1) stack.push(p + 1);
+    if (y > 0) stack.push(p - w);
+    if (y < h - 1) stack.push(p + w);
+  }
+
+  // A notehead's hole, generously bounded. The inside of one runs about a
+  // staff space across and half of one down; twice that in area leaves room for
+  // a rim broken open into the neighbouring hole without letting in the gap
+  // inside a beamed group, which is several spaces of paper.
+  const maxArea = spacing * spacing * 0.9;
+  const maxW = spacing * 1.5;
+  const maxH = spacing * 1.2;
+
+  for (let p = 0; p < data.length; p++) {
+    if (data[p] || seen[p]) continue;
+    // An enclosed hole. Walk it, and paint it in if it is notehead-sized.
+    const region: number[] = [];
+    stack.push(p);
+    seen[p] = 1;
+    let x0 = w;
+    let x1 = 0;
+    let y0 = h;
+    let y1 = 0;
+    while (stack.length) {
+      const q = stack.pop()!;
+      region.push(q);
+      const x = q % w;
+      const y = (q - x) / w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (x > 0 && !data[q - 1] && !seen[q - 1]) (seen[q - 1] = 1), stack.push(q - 1);
+      if (x < w - 1 && !data[q + 1] && !seen[q + 1]) (seen[q + 1] = 1), stack.push(q + 1);
+      if (y > 0 && !data[q - w] && !seen[q - w]) (seen[q - w] = 1), stack.push(q - w);
+      if (y < h - 1 && !data[q + w] && !seen[q + w]) (seen[q + w] = 1), stack.push(q + w);
+    }
+    if (region.length > maxArea || x1 - x0 + 1 > maxW || y1 - y0 + 1 > maxH) continue;
+    for (const q of region) out[q] = 1;
+  }
+
+  return { w, h, data: out };
+}
+
+/**
+ * How well the ink at a point looks like a notehead, from 0 to 1.
+ *
+ * A score, not a verdict. The detector this replaced asked a candidate eight
+ * yes-or-no questions and dropped it on the first no, which meant one thin rim,
+ * one ledger line touching, one neighbouring head a step away could delete a
+ * note that was obvious to the eye — and the failures moved around from one
+ * engraving to the next, because a different question failed each time.
+ * Weighing the evidence instead lets strong agreement outvote one poor
+ * measurement, which is the difference between a reader that copes with an
+ * unfamiliar page and one that has to be retuned for it.
+ *
+ * The evidence is what engraving guarantees. A notehead is an ellipse about
+ * 1.3 staff spaces across and one tall, solid (once its hole is filled), and it
+ * is the only thing on the page of that size that is not part of something
+ * longer — so the ink stops at its edge in most directions, even when a stem
+ * leaves the top and a beam crosses the bottom.
+ */
+function headScore(solid: Bitmap, cx: number, cy: number, sp: number): number {
+  const rx = sp * 0.62;
+  const ry = sp * 0.46;
+
+  // Solid through the middle. The single most telling measurement: whatever
+  // else is around, the inside of a notehead is ink all the way across.
+  const core = ellipseInk(solid, cx, cy, rx * 0.72, ry * 0.72);
+  if (core < 0.75) return 0;
+  const body = ellipseInk(solid, cx, cy, rx, ry);
+
+  // And it stops. A beam, a stem, a barline, a bracket all carry on past where
+  // a notehead's edge would be. Chords and seconds put a real head in the
+  // collar too, so this is weighed rather than obeyed.
+  const collar = annulusInk(solid, cx, cy, rx, ry, 1.5, 2.1);
+
+  // The one thing no amount of agreement should outvote. A notehead is a blob:
+  // leave it in any direction but straight up or down — where its own stem runs
+  // off — and you are on paper within two staff spaces. A beam is a bar several
+  // spaces long, and at the end of a beamed group its corner is otherwise the
+  // size, shape and darkness of a note.
+  if (longestRun(solid, cx, cy, sp * 3) >= sp * 3) return 0;
+
+  return Math.max(0, core * 0.5 + body * 0.5 - Math.max(0, collar - 0.3) * 0.7);
+}
+
+/**
+ * The horizontal bands of the page that are text rather than music.
+ *
+ * Choral music is the case this app exists for, and choral music has words
+ * printed between every pair of staves. That is a problem no amount of looking
+ * at one blob at a time can solve: an o, an e, an a, a 4, once their middles
+ * are filled in, are ellipses about the size of a notehead, sitting the right
+ * distance off the staff to be a note on a ledger line, and often with a tall
+ * thin ascender beside them where a stem would be. Every test that reads one
+ * mark on its own merits will be fooled by some of them, on some page, in some
+ * typeface — which is exactly the sort of failure that moves around and never
+ * quite gets fixed.
+ *
+ * What is not fooled is looking at them together. Text sits on a baseline: a
+ * row of marks, of a common size, whose bottoms line up along the page, over
+ * and over. Music has no baseline — noteheads are scattered up and down by
+ * pitch, which is the entire point of them. So a run of small marks sharing a
+ * bottom edge is a line of words, and everything in that band can be ignored,
+ * whatever the individual marks look like.
+ */
+export function findTextBands(clean: Bitmap, staves: RawStaff[]): Array<[number, number]> {
+  const { w, h, data } = clean;
+  if (!staves.length) return [];
+  const sp = staves.map((s) => s.spacing).sort((a, b) => a - b)[staves.length >> 1];
+
+  // Only outside the staves. Inside one, aligned marks of a common size are
+  // ordinary music — a run of noteheads along a line is exactly that.
+  const inStaff = new Uint8Array(h);
+  for (const s of staves) {
+    const y0 = Math.max(0, Math.floor(s.top - sp * 0.6));
+    const y1 = Math.min(h - 1, Math.ceil(s.bottom + sp * 0.6));
+    for (let y = y0; y <= y1; y++) inStaff[y] = 1;
+  }
+
+  const seen = new Uint8Array(w * h);
+  const marks: Array<{ x: number; y0: number; y1: number }> = [];
+  const stack: number[] = [];
+  for (let p = 0; p < data.length; p++) {
+    // Nothing whose every pixel is inside a staff can be a word, so it is not
+    // worth walking — which skips the beams, the stems and most of the ink on
+    // the page. Anything reaching out of a staff is still walked, from the part
+    // of it that does.
+    if (!data[p] || seen[p] || inStaff[(p / w) | 0]) continue;
+    seen[p] = 1;
+    stack.push(p);
+    let x0 = w;
+    let x1 = 0;
+    let y0 = h;
+    let y1 = 0;
+    let size = 0;
+    while (stack.length) {
+      const q = stack.pop()!;
+      size++;
+      const x = q % w;
+      const y = (q - x) / w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      // Eight-connected: a letter printed at this size is held together by its
+      // diagonals as much as by its sides.
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          const r = ny * w + nx;
+          if (data[r] && !seen[r]) {
+            seen[r] = 1;
+            stack.push(r);
+          }
+        }
+      }
+    }
+    // Letter-sized, clear of the staves, and not a hair or a speck.
+    if (inStaff[y0] || inStaff[y1]) continue;
+    if (size < sp * 1.5) continue;
+    if (y1 - y0 + 1 > sp * 2.6 || x1 - x0 + 1 > sp * 2.6) continue;
+    if (y1 - y0 + 1 < sp * 0.4 || x1 - x0 + 1 < sp * 0.2) continue;
+    marks.push({ x: (x0 + x1) / 2, y0, y1 });
+  }
+
+  // Gather them by where they sit on their baseline. A descender hangs below
+  // it, so the bottom of the commonest row is what lines up, not every bottom.
+  const tolerance = Math.max(2, Math.round(sp * 0.35));
+  marks.sort((a, b) => a.y1 - b.y1);
+  const bands: Array<[number, number]> = [];
+  for (let i = 0; i < marks.length; ) {
+    let j = i;
+    while (j + 1 < marks.length && marks[j + 1].y1 - marks[i].y1 <= tolerance) j++;
+    const group = marks.slice(i, j + 1);
+    i = j + 1;
+    // A word or two at least, spread along the page rather than stacked in one
+    // place — which is what tells a line of lyrics from a chord.
+    if (group.length < 5) continue;
+    const xs = group.map((m) => m.x);
+    if (Math.max(...xs) - Math.min(...xs) < sp * 12) continue;
+    bands.push([Math.min(...group.map((m) => m.y0)), Math.max(...group.map((m) => m.y1))]);
+  }
+  return bands;
+}
+
+/**
+ * Whether something has a stem: a thin vertical stroke rising or falling from
+ * one side of it, a couple of staff spaces long.
+ *
+ * Asked only of ink beyond the staff, and for one reason — that is where the
+ * lyrics are. A word of text under a staff is a row of blobs about the size of
+ * noteheads, and once the holes in them are filled an o, an e, an a and a 4 are
+ * all past arguing with on their own merits. But a note off the staff is joined
+ * to the music: it is hanging off a stem that reaches back towards the staff,
+ * because that is how far it had to travel to get out there. Nothing printed in
+ * a lyric is.
+ */
+function hasStem(clean: Bitmap, x: number, y: number, sp: number): boolean {
+  const want = Math.round(sp * 1.6);
+  for (const side of [-1, 1]) {
+    // The stem meets the head at its side, a touch in from the widest point.
+    for (let off = sp * 0.5; off <= sp * 0.72; off += 1) {
+      const px = Math.round(x + side * off);
+      for (const dir of [-1, 1]) {
+        let n = 0;
+        let miss = 0;
+        for (let d = 1; d <= want * 1.6 && miss <= 1; d++) {
+          if (ink(clean, px, y + dir * d)) {
+            n++;
+            miss = 0;
+          } else miss++;
+        }
+        if (n >= want) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a note this far off the staff has the ledger line it would need.
+ *
+ * Off the staff, notation stops being able to say where a pitch is without
+ * drawing the line to measure it from — so a note more than a space clear of
+ * the staff always has a ledger line through it or immediately beside it. That
+ * makes ledgers the test for whether something out there is a note at all,
+ * which matters because the margins are where the page keeps everything that is
+ * not music: measure numbers, lyrics, dynamics, rehearsal marks. Once their
+ * middles are painted in, a 4 and a 0 and an o are notehead-sized blobs, and no
+ * amount of looking at the blob itself will say otherwise. What says otherwise
+ * is that nothing drew a line to hang them from.
+ */
+function hasLedger(clean: Bitmap, staff: RawStaff, x: number, step: number): boolean {
+  const sp = staff.spacing;
+  // The line it would sit on, or the nearer of the two it sits between.
+  for (const line of step > 9 ? [step + (step % 2), step - (step % 2)] : [step - (step % 2), step + (step % 2)]) {
+    const y = Math.round(staff.lines[4] - (line * sp) / 2);
+    if (y < 0 || y >= clean.h) continue;
+    // A ledger line is thin and reaches past the notehead on both sides. Both
+    // halves of that matter: any ink at all out there is no test, because the
+    // letters of a lyric stand shoulder to shoulder and each one has its
+    // neighbours where a ledger would be. A stroke a couple of pixels deep,
+    // running unbroken from one side of the head to the other, is a ledger and
+    // nothing else printed near a staff looks like it.
+    // Looked for out to the sides only: through the middle the head's own ink
+    // is there instead, and it is not thin.
+    const thin = Math.max(2, Math.round(sp * 0.4));
+    const lineAt = (px: number) => {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (!ink(clean, px, y + dy)) continue;
+        let up = 0;
+        while (up < thin + 2 && ink(clean, px, y + dy - up - 1)) up++;
+        let down = 0;
+        while (down < thin + 2 && ink(clean, px, y + dy + down + 1)) down++;
+        if (up + down + 1 <= thin) return true;
+      }
+      return false;
+    };
+    // How far the ledger sticks out past the head is a matter of house style —
+    // some engravings clear it by a third of a space, some barely at all — so
+    // the wing is looked for anywhere in that range rather than all through it.
+    const wing = (dir: number) => {
+      for (let d = sp * 0.66; d <= sp * 1.0; d += 1) {
+        if (lineAt(Math.round(x + dir * d))) return true;
+      }
+      return false;
+    };
+    if (wing(-1) && wing(1)) return true;
+  }
+  return false;
 }
 
 /**
  * Find noteheads on one staff.
  *
- * Ink density alone finds clefs, lyrics and the number 4 as well as notes. What
- * separates a notehead is its size relative to the staff — about 1.3 spaces
- * wide and one space tall, always, because that is how music is engraved. So
- * every candidate has to pass a measured run-length test, not just a dark one.
+ * Score every position, then keep the peaks — rather than accept everything
+ * that clears a bar, which lets one head be found several times over and its
+ * neighbour not at all.
  */
 export function findHeads(
   clean: Bitmap,
   staff: RawStaff,
   startX = 0,
+  solid = fillHoles(clean, staff.spacing),
+  textBands: Array<[number, number]> = [],
+  /** How far off the staff to look, when a neighbouring staff is closer than
+   * the usual reach — see `readPage`. */
+  reach: [number, number] = [Infinity, Infinity],
 ): Array<{ x: number; y: number; step: number; filled: boolean }> {
   const sp = staff.spacing;
   const rx = sp * 0.62;
   const ry = sp * 0.46;
-  const yTop = Math.max(0, Math.round(staff.top - sp * 2.6));
-  const yBot = Math.min(clean.h - 1, Math.round(staff.bottom + sp * 2.6));
+  const yTop = Math.max(0, Math.round(staff.top - Math.min(sp * 4.5, reach[0])));
+  const yBot = Math.min(clean.h - 1, Math.round(staff.bottom + Math.min(sp * 4.5, reach[1])));
   // Past the clef and the key signature. A fixed distance from the left edge is
   // not enough: where a bracket joins the staves it *is* the left edge, and the
   // clef then sits inside the margin and gets read as a pair of noteheads.
   const xFrom = Math.round(Math.max(staff.left + sp * 4.2, startX));
-  const stride = Math.max(1, Math.round(sp / 7));
+  const stride = Math.max(1, Math.round(sp / 8));
 
-  const minW = sp * 0.8;
-  const maxW = sp * 2.05;
-  // A notehead is one staff space tall, by the same convention that makes it
-  // 1.3 wide, and measured here it never comes in under 0.83. A beam is half a
-  // space, and where one slants past a stem the corner is otherwise the right
-  // size and darkness to be read as a note — which is what was happening at the
-  // ends of beamed groups. Half a space of slack separates the two with room to
-  // spare; the old floor of 0.55 sat right on top of the beam.
-  const minH = sp * 0.72;
-  const maxH = sp * 1.5;
+  // Engraved proportions, loosely bounded: a notehead is 1.3 staff spaces wide
+  // and one tall, and these are wide enough that no real head is outside them.
+  // They are here to keep the scoring away from stems and beams, which are the
+  // wrong size by a factor rather than by a margin.
+  const minW = sp * 0.75;
+  const maxW = sp * 2.2;
+  const minH = sp * 0.68;
+  // Two spaces, not one: seconds in close harmony are printed head on head,
+  // and measuring how tall the ink is through the middle of the upper one
+  // measures both of them. A ceiling that only fits a single head threw the
+  // upper note of every stacked pair away. Nothing else vertical gets in on
+  // this — a stem or a barline is a tenth of the width a notehead has to be.
+  const maxH = sp * 2.5;
 
-  const candidates: Array<{ x: number; y: number; score: number; filled: boolean }> = [];
+  const candidates: Array<{ x: number; y: number; score: number }> = [];
   for (let y = yTop; y <= yBot; y += stride) {
+    // The words printed between the staves are not music, however like a
+    // notehead one of their letters may look.
+    if (textBands.some(([a, b]) => y >= a && y <= b)) continue;
     for (let x = xFrom; x <= staff.right; x += stride) {
-      if (ink(clean, x, y)) {
-        const wide = 1 + run(clean, x, y, -1, 0, maxW) + run(clean, x, y, 1, 0, maxW);
-        if (wide < minW || wide > maxW) continue;
-        const tall = 1 + run(clean, x, y, 0, -1, maxH) + run(clean, x, y, 0, 1, maxH);
-        if (tall < minH || tall > maxH) continue;
-        if (ellipseInk(clean, x, y, rx * 0.55, ry * 0.55) < 0.9) continue;
-        const whole = ellipseInk(clean, x, y, rx, ry);
-        if (whole < 0.72) continue;
-        // Measured over every notehead on the test chart, the longest run out of
-        // one is 2.6 staff spaces and 99 in 100 are under 1.9. A beam runs until
-        // the group ends. Three spaces sits in the gap with room either side.
-        if (longestRun(clean, x, y, sp * 3) >= sp * 3) continue;
-        candidates.push({ x, y, score: whole + 1, filled: true });
-        continue;
+      if (!ink(solid, x, y)) continue;
+      const wide = 1 + run(solid, x, y, -1, 0, maxW) + run(solid, x, y, 1, 0, maxW);
+      if (wide < minW || wide > maxW) continue;
+      const tall = 1 + run(solid, x, y, 0, -1, maxH) + run(solid, x, y, 0, 1, maxH);
+      if (tall < minH || tall > maxH) continue;
+      const score = headScore(solid, x, y, sp);
+      if (score <= 0.62) continue;
+      // Off the staff, a notehead has to prove it is one: the page keeps its
+      // words and its numbers out there, and they are the same size and shape.
+      const at = Math.round((staff.lines[4] - y) / (sp / 2));
+      if (at < -1 || at > 9) {
+        if (!hasLedger(clean, staff, x, at) && !hasStem(clean, x, y, sp)) continue;
       }
-
-      // Hollow head: paper in the middle with a ring of ink around it, and
-      // nothing much beyond that ring — which is what separates a notehead from
-      // the gap between two beams or the counter of a letter.
-      const inner = ellipseInk(clean, x, y, rx * 0.45, ry * 0.45);
-      if (inner > 0.25) continue;
-      // The paper has to stop. Between two beams, or between two stems, it is
-      // ringed by ink in the same way but carries on out of the ring — and that
-      // gap is not a notehead, whatever the ring says.
-      if (gap(clean, x, y, -1, 0, rx * 1.5) >= rx * 1.5) continue;
-      if (gap(clean, x, y, 1, 0, rx * 1.5) >= rx * 1.5) continue;
-      if (gap(clean, x, y, 0, -1, ry * 1.7) >= ry * 1.7) continue;
-      if (gap(clean, x, y, 0, 1, ry * 1.7) >= ry * 1.7) continue;
-      const ring = annulusInk(clean, x, y, rx, ry, 0.6, 1.05);
-      if (ring < 0.6) continue;
-      if (annulusInk(clean, x, y, rx, ry, 1.4, 1.8) > 0.55) continue;
-      candidates.push({ x, y, score: ring - inner, filled: false });
+      candidates.push({ x, y, score });
     }
   }
 
-  // One detection per notehead.
+  /**
+   * One detection per notehead — and, just as important, one per notehead
+   * rather than one per neighbourhood.
+   *
+   * Two notes a second apart are printed touching, one on a line and the next
+   * in the space above, overlapping sideways so they both fit. Suppressing by a
+   * plain rectangle around each head, as this used to, throws the second one
+   * away: it is well within a notehead's width of the first. But a second is
+   * ordinary music — it is most of the chords in close-harmony writing — and
+   * losing the lower note of one is losing a note of the piece.
+   *
+   * The trouble is that a second and a head found twice over look the same from
+   * a distance: both are two marks about half a space apart. No radius tells
+   * them apart, because there is nothing to tell — the difference is not in how
+   * far apart the readings are but in whether they are readings of the same
+   * thing. So each one is walked uphill to the best-scoring position near it
+   * first. Two readings of one head arrive at the same summit and become one;
+   * two heads have their own summits and both survive.
+   */
+  const climb = (c: { x: number; y: number; score: number }) => {
+    let { x, y, score } = c;
+    for (let step = Math.max(1, Math.round(sp / 6)); step >= 1; step >>= 1) {
+      for (let moved = true; moved; ) {
+        moved = false;
+        for (const [dx, dy] of [
+          [step, 0],
+          [-step, 0],
+          [0, step],
+          [0, -step],
+        ]) {
+          // Never further than a quarter-space vertically: that is enough to
+          // settle onto the middle of the head this reading came from, and not
+          // enough to walk into the head a half-space above it. Without that
+          // bound the two heads of a second climb into each other and merge.
+          if (Math.abs(x + dx - c.x) > sp * 0.6 || Math.abs(y + dy - c.y) > sp * 0.28) continue;
+          const s = headScore(solid, x + dx, y + dy, sp);
+          if (s > score + 1e-6) {
+            x += dx;
+            y += dy;
+            score = s;
+            moved = true;
+          }
+        }
+      }
+    }
+    return { x, y, score };
+  };
+
   candidates.sort((a, b) => b.score - a.score);
-  const kept: typeof candidates = [];
+  const peaks: typeof candidates = [];
   for (const c of candidates) {
-    if (kept.some((k) => Math.abs(k.x - c.x) < sp * 1.15 && Math.abs(k.y - c.y) < sp * 0.85))
-      continue;
-    kept.push(c);
+    // Cheap first pass, so that only a handful of climbs are needed per head.
+    if (peaks.some((k) => Math.abs(k.x - c.x) <= 1 && Math.abs(k.y - c.y) <= 1)) continue;
+    peaks.push(climb(c));
+  }
+
+  const step = (y: number) => Math.round((staff.lines[4] - y) / (sp / 2));
+
+  /**
+   * Ranked by how well they read *and* by how squarely they sit on the staff.
+   *
+   * Notes live on the half-space lattice — on a line or in a space, never
+   * between. That is worth something when two of them are printed one on top of
+   * the other, as a second in close harmony is: the ink of the pair is a single
+   * tall blob, and its middle reads as a fine notehead, so a third note appears
+   * between the two real ones. It is the one reading of the three that is half
+   * a space off the lattice, and preferring the ones that are on it settles the
+   * matter without having to guess at a distance.
+   */
+  const offLattice = (y: number) => Math.abs((staff.lines[4] - y) / (sp / 2) - step(y));
+  peaks.sort((a, b) => b.score - 0.35 * offLattice(b.y) - (a.score - 0.35 * offLattice(a.y)));
+  const kept: typeof candidates = [];
+  for (const c of peaks) {
+    const duplicate = kept.some(
+      (k) =>
+        // The same summit, reached from two directions — or the phantom
+        // between two heads that touch, which is nearer to both than a real
+        // note ever is to its neighbour.
+        (Math.abs(k.x - c.x) <= sp * 0.35 && Math.abs(k.y - c.y) <= sp * 0.44) ||
+        // Or the same pitch at the same moment, which is not music.
+        (step(k.y) === step(c.y) && Math.abs(k.x - c.x) < sp * 1.3),
+    );
+    if (!duplicate) kept.push(c);
   }
 
   return kept
@@ -508,8 +880,11 @@ export function findHeads(
       y: k.y,
       // Snap to the nearest half-space: a notehead always sits on a line or in
       // a space, so rounding here removes a pixel of detection jitter.
-      step: Math.round((staff.lines[4] - k.y) / (sp / 2)),
-      filled: k.filled,
+      step: step(k.y),
+      // Hollow or filled, read from the ink as it was printed. Only ever a
+      // description of a note already found — never a way of finding one, which
+      // is what it used to be and why half notes went missing.
+      filled: ellipseInk(clean, k.x, k.y, rx * 0.38, ry * 0.38) > 0.55,
     }))
     .sort((a, b) => a.x - b.x);
 }
@@ -867,7 +1242,31 @@ export function readKeySignature(
   // because everything printed here is the wrong shape to be a note and the
   // right size to be mistaken for one.
   const clefEnd = from > 0 ? glyphs[from - 1].x1 : staff.left + sp * 3.2;
-  const endX = Math.max(clefEnd, sharp.endX, flat.endX);
+  let endX = Math.max(clefEnd, sharp.endX, flat.endX);
+
+  /**
+   * And past the time signature, if one is printed after the key.
+   *
+   * Its digits are the last thing at the head of a staff that is the size of a
+   * notehead — a 2, a 4, a 0 are all roughly one space across and rounded — and
+   * being printed inside the staff they have every ledger line and stem they
+   * could need to look like music. They were read as notes.
+   *
+   * What they are not is a note with a stem, which is the other tall thing that
+   * can stand here. A time signature is two digits filling the staff from the
+   * top line to the bottom, so ink runs the width of it nearly all the way
+   * down; a note is a head with a thread hanging off it, thin over most of its
+   * height. That is the measurement, and it does not care which digits they are
+   * or whether they are 4/4, 6/8 or a great C.
+   */
+  for (const g of glyphs) {
+    if (g.x0 <= endX || g.x0 - endX > sp * 3.5) continue;
+    const w = g.x1 - g.x0 + 1;
+    const h = g.y1 - g.y0 + 1;
+    if (w > sp * 2.4 || h < sp * 3.2) break;
+    if (bandWidth(clean, g, 0.1, 0.9, 'typical') < 0.42) break;
+    endX = g.x1;
+  }
 
   if (sharp.n !== flat.n) {
     const best = flat.n > sharp.n ? flat : sharp;
@@ -1004,6 +1403,12 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
   if (!raw.length) return { staves: [], notes: [] };
 
   const clean = removeStaffLines(bm, raw);
+  // Noteheads are looked for in a copy with their holes painted in, so that a
+  // half note is the same shape as a quarter note. One pass over the page does
+  // for every staff on it — the staves of a page are engraved at one size.
+  const spacing = raw.map((s) => s.spacing).sort((a, b) => a - b)[raw.length >> 1];
+  const solid = fillHoles(clean, spacing);
+  const textBands = findTextBands(clean, raw);
   const systems = groupSystems(clean, raw);
 
   const staves: DetectedStaff[] = [];
@@ -1032,7 +1437,18 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
         bars: [],
       });
 
-      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6);
+      // How far above and below to look for notes on ledger lines. Two staves
+      // close together would otherwise both claim the notes in the gap, and the
+      // same notehead read against two staves is two different pitches — the
+      // one kind of error the reader must not make silently. The halfway line
+      // decides, because a note there belongs to whichever staff is nearer.
+      const above = raw[staffIndex - 1];
+      const below = raw[staffIndex + 1];
+      const reach: [number, number] = [
+        above ? (s.top - above.bottom) / 2 : Infinity,
+        below ? (below.top - s.bottom) / 2 : Infinity,
+      ];
+      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6, solid, textBands, reach);
       staves[staves.length - 1].bars = findBarlines(clean, s, heads);
       heads.forEach((h, i) => {
         notes.push({
