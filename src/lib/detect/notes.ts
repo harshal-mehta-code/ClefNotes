@@ -453,21 +453,22 @@ export function fillHoles(bm: Bitmap, spacing: number): Bitmap {
     if (y < h - 1) stack.push(p + w);
   }
 
-  // A notehead's hole, bounded by what one actually looks like. Size alone is
-  // not enough: a sharp has four cells of about the same area between its
-  // bars, and filling them in makes the whole glyph one solid mark, which then
-  // reads as a note — two notes, in fact, one in each half of it.
+  // A notehead's hole, generously bounded. The inside of one runs about a
+  // staff space across and half of one down; twice that in area leaves room for
+  // a rim broken open into the neighbouring hole without letting in the gap
+  // inside a beamed group, which is several spaces of paper.
   //
-  // But a notehead's hole is not any old shape of that size. It is the inside
-  // of an ellipse laid over on its side, so it is a good deal wider than it is
-  // tall, always, at every size and in every typeface — while the cells of a
-  // sharp are as tall as they are wide, being what is left between two
-  // uprights and two crossbars. That proportion is the test.
+  // Deliberately not fussy about shape. A sharp has four cells of about this
+  // size between its bars, and filling them makes the glyph one solid mark that
+  // reads as a note — but the answer to that is not to guess which holes belong
+  // to noteheads from the holes alone. A semibreve's counter is nearly round
+  // and so is a sharp's cell; measured over these scores no proportion parts
+  // them without taking whole notes with it. What tells them apart is whether
+  // the mark they are inside of looks like the noteheads this page prints —
+  // see `learnHeadTemplate`.
   const maxArea = spacing * spacing * 0.9;
   const maxW = spacing * 1.5;
   const maxH = spacing * 1.2;
-  const minW = spacing * 0.45;
-  const flat = 1.45;
 
   for (let p = 0; p < data.length; p++) {
     if (data[p] || seen[p]) continue;
@@ -493,10 +494,7 @@ export function fillHoles(bm: Bitmap, spacing: number): Bitmap {
       if (y > 0 && !data[q - w] && !seen[q - w]) (seen[q - w] = 1), stack.push(q - w);
       if (y < h - 1 && !data[q + w] && !seen[q + w]) (seen[q + w] = 1), stack.push(q + w);
     }
-    const width = x1 - x0 + 1;
-    const height = y1 - y0 + 1;
-    if (region.length > maxArea || width > maxW || height > maxH) continue;
-    if (width < minW || width < height * flat) continue;
+    if (region.length > maxArea || x1 - x0 + 1 > maxW || y1 - y0 + 1 > maxH) continue;
     for (const q of region) out[q] = 1;
   }
 
@@ -736,6 +734,241 @@ function hasLedger(clean: Bitmap, staff: RawStaff, x: number, step: number): boo
 }
 
 /**
+ * What a notehead looks like *on this page*.
+ *
+ * Everything this reader knew about the shape of a notehead used to be a
+ * number written down here: 1.3 staff spaces across, one tall, this much ink
+ * inside, that much allowed outside, holes half again as wide as they are
+ * tall. Each held for the scores it was written against and broke on the next
+ * — a sharp is narrow, so narrow marks were banned, and a whole note in a
+ * tight engraving was banned along with it. Numbers picked by looking at three
+ * PDFs describe those three PDFs.
+ *
+ * The page knows better. A notehead is the most repeated mark on any engraved
+ * score — hundreds of them, identical, stamped from one glyph — so the average
+ * of the marks that look roughly like one *is* that page's notehead, at its
+ * size, in its typeface, at whatever resolution and quality it arrived in.
+ * Taking the median rather than the mean makes it proof against a minority of
+ * wrong exemplars: a few sharps or beam corners among four hundred marks move
+ * a median not at all.
+ *
+ * Everything found afterwards is measured against it — and against how well
+ * the page's own noteheads match it, so that the bar is set by this engraving
+ * too. A sharp is then turned away for the honest reason: it does not look
+ * like the thing printed two hundred times on this page.
+ */
+export interface HeadTemplate {
+  /** Half-width and half-height of the patch, in pixels. */
+  rx: number;
+  ry: number;
+  /** Ink or not, per pixel, row-major over (2rx+1) × (2ry+1). */
+  data: Float32Array;
+  mean: number;
+  norm: number;
+  /** How many marks it was learned from. */
+  exemplars: number;
+  /**
+   * How poor a match the page's own noteheads can be — taken from the worst of
+   * them, so the bar is set by real notes rather than by a number I chose.
+   */
+  cut: number;
+}
+
+function templateFrom(
+  data: Float32Array,
+  rx: number,
+  ry: number,
+  exemplars: number,
+  cut = 0.5,
+): HeadTemplate {
+  let mean = 0;
+  for (const v of data) mean += v;
+  mean /= data.length;
+  let norm = 0;
+  for (const v of data) norm += (v - mean) * (v - mean);
+  return { rx, ry, data, mean, norm: Math.sqrt(norm) || 1, exemplars, cut };
+}
+
+/**
+ * The fallback for a page with too few marks to learn from: an ellipse of the
+ * proportions engraving has always used.
+ */
+function ellipseTemplate(sp: number): HeadTemplate {
+  const rx = Math.max(2, Math.round(sp * 0.8));
+  const ry = Math.max(2, Math.round(sp * 0.62));
+  const w = rx * 2 + 1;
+  const data = new Float32Array(w * (ry * 2 + 1));
+  for (let y = -ry; y <= ry; y++) {
+    for (let x = -rx; x <= rx; x++) {
+      const u = x / (sp * 0.62);
+      const v = y / (sp * 0.46);
+      data[(y + ry) * w + x + rx] = u * u + v * v <= 1 ? 1 : 0;
+    }
+  }
+  return templateFrom(data, rx, ry, 0, 0.45);
+}
+
+/** How well the ink around a point matches one template, from -1 to 1. */
+function matchOne(bm: Bitmap, t: HeadTemplate, cx: number, cy: number): number {
+  const n = t.data.length;
+  let sum = 0;
+  const patch = new Float32Array(n);
+  for (let y = -t.ry, i = 0; y <= t.ry; y++) {
+    for (let x = -t.rx; x <= t.rx; x++, i++) {
+      const v = ink(bm, cx + x, cy + y) ? 1 : 0;
+      patch[i] = v;
+      sum += v;
+    }
+  }
+  const mean = sum / n;
+  let cross = 0;
+  let norm = 0;
+  for (let i = 0; i < n; i++) {
+    const d = patch[i] - mean;
+    cross += d * (t.data[i] - t.mean);
+    norm += d * d;
+  }
+  norm = Math.sqrt(norm);
+  return norm < 1e-6 ? 0 : cross / (norm * t.norm);
+}
+
+/** Whether a mark clears the bar for any of the shapes the page prints. */
+function matches(bm: Bitmap, ts: HeadTemplate[], cx: number, cy: number): boolean {
+  return ts.some((t) => matchOne(bm, t, cx, cy) >= t.cut);
+}
+
+/**
+ * Learn this page's notehead from this page.
+ *
+ * Candidates are gathered with the loosest idea of one — ink of roughly the
+ * right size — then settled onto the middle of whatever they landed on, and
+ * averaged pixel by pixel. Stems, dots and ledger lines are in some exemplars
+ * and not others, and on different sides, so they fall out of the middle of
+ * the distribution; the head, which is in all of them and always in the same
+ * place, is what is left.
+ */
+export function learnHeadTemplate(solid: Bitmap, staves: RawStaff[]): HeadTemplate[] {
+  if (!staves.length) return [ellipseTemplate(8)];
+  const sp = staves.map((s) => s.spacing).sort((a, b) => a - b)[staves.length >> 1];
+  const fallback = ellipseTemplate(sp);
+  const rx = fallback.rx;
+  const ry = fallback.ry;
+  const stride = Math.max(1, Math.round(sp / 5));
+
+  const picks: Array<{ x: number; y: number; score: number }> = [];
+  for (const staff of staves) {
+    const yTop = Math.max(0, Math.round(staff.top - sp));
+    const yBot = Math.min(solid.h - 1, Math.round(staff.bottom + sp));
+    const xFrom = Math.round(staff.left + sp * 5);
+    for (let y = yTop; y <= yBot; y += stride) {
+      for (let x = xFrom; x <= staff.right; x += stride) {
+        if (!ink(solid, x, y)) continue;
+        const wide = 1 + run(solid, x, y, -1, 0, sp * 2.4) + run(solid, x, y, 1, 0, sp * 2.4);
+        if (wide < sp * 0.9 || wide > sp * 2.3) continue;
+        const tall = 1 + run(solid, x, y, 0, -1, sp * 2) + run(solid, x, y, 0, 1, sp * 2);
+        if (tall < sp * 0.7 || tall > sp * 1.5) continue;
+        if (longestRun(solid, x, y, sp * 3) >= sp * 3) continue;
+        const score = headScore(solid, x, y, sp);
+        if (score > 0.6) picks.push({ x, y, score });
+      }
+    }
+  }
+
+  // Settle each one onto the middle of the mark it landed on. They start as
+  // points on a grid that happened to find ink, which is anywhere within half a
+  // head of the centre, and averaging patches cut around points like that
+  // averages the smear rather than the shape.
+  for (const p of picks) {
+    for (let step = Math.max(1, Math.round(sp / 4)); step >= 1; step >>= 1) {
+      for (let moved = true; moved; ) {
+        moved = false;
+        for (const [dx, dy] of [
+          [step, 0],
+          [-step, 0],
+          [0, step],
+          [0, -step],
+        ]) {
+          const better = headScore(solid, p.x + dx, p.y + dy, sp);
+          if (better > p.score + 1e-6) {
+            p.x += dx;
+            p.y += dy;
+            p.score = better;
+            moved = true;
+          }
+        }
+      }
+    }
+  }
+
+  // One exemplar per mark, so a head sampled six times does not count six times.
+  picks.sort((a, b) => b.score - a.score);
+  const used: typeof picks = [];
+  for (const p of picks) {
+    if (used.some((u) => Math.abs(u.x - p.x) < sp * 0.8 && Math.abs(u.y - p.y) < sp * 0.5)) continue;
+    used.push(p);
+    if (used.length >= 400) break;
+  }
+  // Too few to learn from — a page of mostly rests, or a fragment. The ellipse
+  // is a poorer template but an honest one, and it does not depend on the page.
+  if (used.length < 24) return [fallback];
+
+  const w = rx * 2 + 1;
+  const h = ry * 2 + 1;
+  const data = new Float32Array(w * h);
+  for (let y = -ry, i = 0; y <= ry; y++) {
+    for (let x = -rx; x <= rx; x++, i++) {
+      let inked = 0;
+      for (const u of used) inked += ink(solid, u.x + x, u.y + y) ? 1 : 0;
+      // The median of a sample of noughts and ones is whether most had ink.
+      data[i] = inked * 2 > used.length ? 1 : 0;
+    }
+  }
+  const learned = templateFrom(data, rx, ry, used.length);
+
+  /**
+   * Music has more than one notehead, and the difference between them is
+   * width. The black head and the white head share an outline — once the hole
+   * is filled they are the same mark — but a semibreve is a different glyph,
+   * about a third again as wide. It is printed too seldom to sway a median
+   * taken over a whole page, so learned as one shape it comes out a crotchet,
+   * and then every whole note fails to match it.
+   *
+   * Sorting the marks into two kinds and averaging each separately was the
+   * first attempt, and it learned the wrong division: heads with the stem on
+   * the left against heads with the stem on the right, that being the largest
+   * difference between patches rather than the meaningful one. So the second
+   * shape is derived rather than learned — this page's own notehead, stretched
+   * sideways by the ratio engraving keeps between the two.
+   */
+  const wideData = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const src = Math.round(rx + (x - rx) / 1.35);
+      wideData[y * w + x] = src >= 0 && src < w ? data[y * w + src] : 0;
+    }
+  }
+  const widened = templateFrom(wideData, rx, ry, used.length);
+
+  /**
+   * And the bar each has to clear, read off the page as well.
+   *
+   * Every notehead here is one of the marks the template was made from, so how
+   * badly the worst of them matches it is how badly a real notehead can match
+   * on this engraving: anything above that is a note as far as this page is
+   * concerned. A little below the tenth-worst leaves room for the heads that
+   * were never sampled, and the fixed bounds either side are rails against a
+   * page whose marks are all alike — which would set the bar absurdly high —
+   * or all unlike, absurdly low.
+   */
+  for (const t of [learned, widened]) {
+    const scores = used.map((u) => matchOne(solid, t, u.x, u.y)).sort((a, b) => a - b);
+    const low = scores[Math.floor(scores.length * 0.1)];
+    t.cut = Math.min(0.72, Math.max(0.4, low - 0.08));
+  }
+  return [learned, widened];
+}
+
+/**
  * Find noteheads on one staff.
  *
  * Score every position, then keep the peaks — rather than accept everything
@@ -751,6 +984,7 @@ export function findHeads(
   /** How far off the staff to look, when a neighbouring staff is closer than
    * the usual reach — see `readPage`. */
   reach: [number, number] = [Infinity, Infinity],
+  templates: HeadTemplate[] = learnHeadTemplate(solid, [staff]),
 ): Array<{ x: number; y: number; step: number; filled: boolean }> {
   const sp = staff.spacing;
   const rx = sp * 0.62;
@@ -882,7 +1116,12 @@ export function findHeads(
         // Or the same pitch at the same moment, which is not music.
         (step(k.y) === step(c.y) && Math.abs(k.x - c.x) < sp * 1.3),
     );
-    if (!duplicate) kept.push(c);
+    if (duplicate) continue;
+    // The last word: does this look like the noteheads this page prints? Size
+    // and solidity got it this far, and both are satisfied by things that are
+    // not notes — a sharp with its cells painted in most of all.
+    if (!matches(solid, templates, c.x, c.y)) continue;
+    kept.push(c);
   }
 
   return kept
@@ -1420,6 +1659,8 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
   const spacing = raw.map((s) => s.spacing).sort((a, b) => a - b)[raw.length >> 1];
   const solid = fillHoles(clean, spacing);
   const textBands = findTextBands(clean, raw);
+  // What a notehead looks like here, taken from this page's own printing.
+  const templates = learnHeadTemplate(solid, raw);
   const systems = groupSystems(clean, raw);
 
   const staves: DetectedStaff[] = [];
@@ -1459,7 +1700,7 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
         above ? (s.top - above.bottom) / 2 : Infinity,
         below ? (below.top - s.bottom) / 2 : Infinity,
       ];
-      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6, solid, textBands, reach);
+      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6, solid, textBands, reach, templates);
       staves[staves.length - 1].bars = findBarlines(clean, s, heads);
       heads.forEach((h, i) => {
         notes.push({
