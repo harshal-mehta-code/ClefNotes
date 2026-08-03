@@ -113,3 +113,64 @@ export async function cleanPdf(b64: string, pageIndex: number) {
   ctx.putImageData(out, 0, 0);
   return canvas.toDataURL('image/png');
 }
+
+/** Every enclosed hole small enough to be a notehead's, with its proportions. */
+export async function holes(b64: string, pageIndex: number) {
+  const { toBitmap, findStaves, removeStaffLines } = await import('../src/lib/detect/notes');
+  const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const doc = await lib.getDocument({ data: bin }).promise;
+  const pdfPage = await doc.getPage(pageIndex + 1);
+  const scale = Math.min(4, Math.max(1.5, 2200 / pdfPage.getViewport({ scale: 1 }).width));
+  const viewport = pdfPage.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await pdfPage.render({ canvas, canvasContext: ctx, viewport }).promise;
+  const bm = toBitmap(ctx.getImageData(0, 0, canvas.width, canvas.height), false);
+  const staves = findStaves(bm);
+  const sp = staves[0].spacing;
+  const clean = removeStaffLines(bm, staves);
+  const { w, h, data } = clean;
+  const seen = new Uint8Array(w * h);
+  const stack: number[] = [];
+  for (let x = 0; x < w; x++) stack.push(x, x + (h - 1) * w);
+  for (let y = 0; y < h; y++) stack.push(y * w, y * w + w - 1);
+  while (stack.length) {
+    const p = stack.pop()!;
+    if (seen[p] || data[p]) continue;
+    seen[p] = 1;
+    const x = p % w;
+    const y = (p - x) / w;
+    if (x > 0) stack.push(p - 1);
+    if (x < w - 1) stack.push(p + 1);
+    if (y > 0) stack.push(p - w);
+    if (y < h - 1) stack.push(p + w);
+  }
+  const out: Array<{ x: number; y: number; w: number; h: number }> = [];
+  for (let p = 0; p < data.length; p++) {
+    if (data[p] || seen[p]) continue;
+    seen[p] = 1;
+    stack.push(p);
+    let x0 = w, x1 = 0, y0 = h, y1 = 0, n = 0;
+    while (stack.length) {
+      const q = stack.pop()!;
+      n++;
+      const x = q % w;
+      const y = (q - x) / w;
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (x > 0 && !data[q - 1] && !seen[q - 1]) (seen[q - 1] = 1), stack.push(q - 1);
+      if (x < w - 1 && !data[q + 1] && !seen[q + 1]) (seen[q + 1] = 1), stack.push(q + 1);
+      if (y > 0 && !data[q - w] && !seen[q - w]) (seen[q - w] = 1), stack.push(q - w);
+      if (y < h - 1 && !data[q + w] && !seen[q + w]) (seen[q + w] = 1), stack.push(q + w);
+    }
+    if (n > sp * sp * 0.9 || x1 - x0 + 1 > sp * 1.5 || y1 - y0 + 1 > sp * 1.2) continue;
+    out.push({ x: x0, y: y0, w: (x1 - x0 + 1) / sp, h: (y1 - y0 + 1) / sp });
+  }
+  return { sp, holes: out };
+}

@@ -453,13 +453,21 @@ export function fillHoles(bm: Bitmap, spacing: number): Bitmap {
     if (y < h - 1) stack.push(p + w);
   }
 
-  // A notehead's hole, generously bounded. The inside of one runs about a
-  // staff space across and half of one down; twice that in area leaves room for
-  // a rim broken open into the neighbouring hole without letting in the gap
-  // inside a beamed group, which is several spaces of paper.
+  // A notehead's hole, bounded by what one actually looks like. Size alone is
+  // not enough: a sharp has four cells of about the same area between its
+  // bars, and filling them in makes the whole glyph one solid mark, which then
+  // reads as a note — two notes, in fact, one in each half of it.
+  //
+  // But a notehead's hole is not any old shape of that size. It is the inside
+  // of an ellipse laid over on its side, so it is a good deal wider than it is
+  // tall, always, at every size and in every typeface — while the cells of a
+  // sharp are as tall as they are wide, being what is left between two
+  // uprights and two crossbars. That proportion is the test.
   const maxArea = spacing * spacing * 0.9;
   const maxW = spacing * 1.5;
   const maxH = spacing * 1.2;
+  const minW = spacing * 0.45;
+  const flat = 1.45;
 
   for (let p = 0; p < data.length; p++) {
     if (data[p] || seen[p]) continue;
@@ -485,7 +493,10 @@ export function fillHoles(bm: Bitmap, spacing: number): Bitmap {
       if (y > 0 && !data[q - w] && !seen[q - w]) (seen[q - w] = 1), stack.push(q - w);
       if (y < h - 1 && !data[q + w] && !seen[q + w]) (seen[q + w] = 1), stack.push(q + w);
     }
-    if (region.length > maxArea || x1 - x0 + 1 > maxW || y1 - y0 + 1 > maxH) continue;
+    const width = x1 - x0 + 1;
+    const height = y1 - y0 + 1;
+    if (region.length > maxArea || width > maxW || height > maxH) continue;
+    if (width < minW || width < height * flat) continue;
     for (const q of region) out[q] = 1;
   }
 
