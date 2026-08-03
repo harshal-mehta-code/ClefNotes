@@ -427,7 +427,7 @@ function longestRun(bm: Bitmap, cx: number, cy: number, max: number): number {
  * Holes too big to be a notehead's — the space inside a beamed group, the bowl
  * of a clef — are left alone, which is what keeps them from becoming notes.
  */
-export function fillHoles(bm: Bitmap, spacing: number): Bitmap {
+export function fillHoles(bm: Bitmap, spacing: number, walls?: Bitmap): Bitmap {
   const { w, h, data } = bm;
   const out = new Uint8Array(data);
 
@@ -495,6 +495,50 @@ export function fillHoles(bm: Bitmap, spacing: number): Bitmap {
       if (y < h - 1 && !data[q + w] && !seen[q + w]) (seen[q + w] = 1), stack.push(q + w);
     }
     if (region.length > maxArea || x1 - x0 + 1 > maxW || y1 - y0 + 1 > maxH) continue;
+    /**
+     * And, when asked, walled in by something that is still there once the
+     * staff lines have gone.
+     *
+     * Counters have to be found on the page as printed, lines and all: where a
+     * line grazes the top of a white notehead the rim there is as thin as the
+     * line and comes away with it, leaving a horseshoe with nothing enclosed to
+     * fill, and whole notes went missing wherever the engraver happened to lay
+     * one against a line. But with the lines still in place they wall things in
+     * themselves — the paper caught between a stem, the tail of a quaver and a
+     * staff line is a notehead-sized hole made mostly of line, and filling it
+     * hangs a phantom note off the tail of every quaver.
+     *
+     * The two are told apart by how much of the wall is real. A counter is
+     * walled in by the glyph around it and the line only grazes one edge of it;
+     * a gap between the stems leans on the line for a quarter of its perimeter
+     * or more. Measured over these scores a grazed counter keeps 0.88 of its
+     * wall and the quaver tails keep 0.67 to 0.77, so the line goes between.
+     * This is the least principled number left in here, and the one to look at
+     * first if a page reads a note that is not there, or misses a white one
+     * sitting against a staff line.
+     */
+    if (walls) {
+      let standing = 0;
+      let edge = 0;
+      for (const q of region) {
+        const x = q % w;
+        const y = (q - x) / w;
+        for (const [dx, dy] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+          if (!data[ny * w + nx]) continue;
+          edge++;
+          if (walls.data[ny * w + nx]) standing++;
+        }
+      }
+      if (edge && standing < edge * 0.85) continue;
+    }
     for (const q of region) out[q] = 1;
   }
 
@@ -534,18 +578,11 @@ function headScore(solid: Bitmap, cx: number, cy: number, sp: number): number {
   // collar too, so this is weighed rather than obeyed.
   const collar = annulusInk(solid, cx, cy, rx, ry, 1.5, 2.1);
 
-  // The one thing no amount of agreement should outvote. A notehead is a blob:
-  // leave it in any direction but straight up or down — where its own stem runs
-  // off — and you are on paper within two staff spaces. A beam is a bar several
-  // spaces long, and at the end of a beamed group its corner is otherwise the
-  // size, shape and darkness of a note.
-  if (longestRun(solid, cx, cy, sp * 3) >= sp * 3) return 0;
-
   return Math.max(0, core * 0.5 + body * 0.5 - Math.max(0, collar - 0.3) * 0.7);
 }
 
 /**
- * The horizontal bands of the page that are text rather than music.
+ * The marks on the page that are text rather than music.
  *
  * Choral music is the case this app exists for, and choral music has words
  * printed between every pair of staves. That is a problem no amount of looking
@@ -561,10 +598,23 @@ function headScore(solid: Bitmap, cx: number, cy: number, sp: number): number {
  * row of marks, of a common size, whose bottoms line up along the page, over
  * and over. Music has no baseline — noteheads are scattered up and down by
  * pitch, which is the entire point of them. So a run of small marks sharing a
- * bottom edge is a line of words, and everything in that band can be ignored,
- * whatever the individual marks look like.
+ * bottom edge is a line of words, and the marks in that run can be ignored,
+ * whatever any one of them looks like on its own.
+ *
+ * The marks, and not the rows they sit in. A line of lyrics belongs to one
+ * staff but crosses the whole page, and the gap it is printed in is also where
+ * the staff below hangs its ledger notes — so blanking out those rows across
+ * the page, which is what this used to do, deleted the high notes of the next
+ * part down. The words are only where the words are.
  */
-export function findTextBands(clean: Bitmap, staves: RawStaff[]): Array<[number, number]> {
+export interface TextMark {
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+}
+
+export function findTextMarks(clean: Bitmap, staves: RawStaff[]): TextMark[] {
   const { w, h, data } = clean;
   if (!staves.length) return [];
   const sp = staves.map((s) => s.spacing).sort((a, b) => a - b)[staves.length >> 1];
@@ -579,7 +629,7 @@ export function findTextBands(clean: Bitmap, staves: RawStaff[]): Array<[number,
   }
 
   const seen = new Uint8Array(w * h);
-  const marks: Array<{ x: number; y0: number; y1: number }> = [];
+  const marks: Array<{ x: number; x0: number; x1: number; y0: number; y1: number }> = [];
   const stack: number[] = [];
   for (let p = 0; p < data.length; p++) {
     // Nothing whose every pixel is inside a staff can be a word, so it is not
@@ -623,14 +673,14 @@ export function findTextBands(clean: Bitmap, staves: RawStaff[]): Array<[number,
     if (size < sp * 1.5) continue;
     if (y1 - y0 + 1 > sp * 2.6 || x1 - x0 + 1 > sp * 2.6) continue;
     if (y1 - y0 + 1 < sp * 0.4 || x1 - x0 + 1 < sp * 0.2) continue;
-    marks.push({ x: (x0 + x1) / 2, y0, y1 });
+    marks.push({ x: (x0 + x1) / 2, x0, x1, y0, y1 });
   }
 
   // Gather them by where they sit on their baseline. A descender hangs below
   // it, so the bottom of the commonest row is what lines up, not every bottom.
   const tolerance = Math.max(2, Math.round(sp * 0.35));
   marks.sort((a, b) => a.y1 - b.y1);
-  const bands: Array<[number, number]> = [];
+  const text: TextMark[] = [];
   for (let i = 0; i < marks.length; ) {
     let j = i;
     while (j + 1 < marks.length && marks[j + 1].y1 - marks[i].y1 <= tolerance) j++;
@@ -641,9 +691,9 @@ export function findTextBands(clean: Bitmap, staves: RawStaff[]): Array<[number,
     if (group.length < 5) continue;
     const xs = group.map((m) => m.x);
     if (Math.max(...xs) - Math.min(...xs) < sp * 12) continue;
-    bands.push([Math.min(...group.map((m) => m.y0)), Math.max(...group.map((m) => m.y1))]);
+    for (const m of group) text.push({ x0: m.x0, x1: m.x1, y0: m.y0, y1: m.y1 });
   }
-  return bands;
+  return text;
 }
 
 /**
@@ -731,6 +781,33 @@ function hasLedger(clean: Bitmap, staff: RawStaff, x: number, step: number): boo
     if (wing(-1) && wing(1)) return true;
   }
   return false;
+}
+
+/**
+ * How far a mark runs sideways while it is still as thick as a notehead.
+ *
+ * Plain ink runs off along whatever the notehead is attached to. A tie or a
+ * slur arriving from the bar before leaves the page's ink continuous through
+ * the head and out the other side, so measuring how wide the ink is measures
+ * the tie, not the note — a semibreve tied on both sides came out four staff
+ * spaces across and was thrown away as too wide to be a notehead. Ledger
+ * lines and beams do the same thing.
+ *
+ * What none of them are is tall. A notehead is a staff space deep; a tie is a
+ * stroke a fraction of that. So the walk stops where the ink thins out, and
+ * what it measures is the head.
+ */
+function thick(bm: Bitmap, cx: number, cy: number, dx: number, max: number, sp: number): number {
+  const need = sp * 0.45;
+  let n = 0;
+  while (n < max) {
+    const x = cx + dx * (n + 1);
+    if (!ink(bm, x, cy)) break;
+    const depth = 1 + run(bm, x, cy, 0, -1, sp * 2) + run(bm, x, cy, 0, 1, sp * 2);
+    if (depth < need) break;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -874,6 +951,22 @@ export function learnHeadTemplate(solid: Bitmap, staves: RawStaff[]): HeadTempla
     }
   }
 
+  // Thin them out before the climbing rather than after. Every mark is found
+  // twenty times over by a grid this fine, and settling all twenty costs twenty
+  // times what settling one does for exactly the same answer.
+  picks.sort((a, b) => b.score - a.score);
+  const coarse = new Set<string>();
+  const thinned: typeof picks = [];
+  for (const p of picks) {
+    const key = `${Math.round(p.x / (sp * 0.6))},${Math.round(p.y / (sp * 0.4))}`;
+    if (coarse.has(key)) continue;
+    coarse.add(key);
+    thinned.push(p);
+    if (thinned.length >= 600) break;
+  }
+  picks.length = 0;
+  picks.push(...thinned);
+
   // Settle each one onto the middle of the mark it landed on. They start as
   // points on a grid that happened to find ink, which is anywhere within half a
   // head of the centre, and averaging patches cut around points like that
@@ -980,7 +1073,7 @@ export function findHeads(
   staff: RawStaff,
   startX = 0,
   solid = fillHoles(clean, staff.spacing),
-  textBands: Array<[number, number]> = [],
+  textMask: Uint8Array | null = null,
   /** How far off the staff to look, when a neighbouring staff is closer than
    * the usual reach — see `readPage`. */
   reach: [number, number] = [Infinity, Infinity],
@@ -1013,15 +1106,27 @@ export function findHeads(
 
   const candidates: Array<{ x: number; y: number; score: number }> = [];
   for (let y = yTop; y <= yBot; y += stride) {
-    // The words printed between the staves are not music, however like a
-    // notehead one of their letters may look.
-    if (textBands.some(([a, b]) => y >= a && y <= b)) continue;
     for (let x = xFrom; x <= staff.right; x += stride) {
       if (!ink(solid, x, y)) continue;
-      const wide = 1 + run(solid, x, y, -1, 0, maxW) + run(solid, x, y, 1, 0, maxW);
-      if (wide < minW || wide > maxW) continue;
+      // The words printed between the staves are not music, however like a
+      // notehead one of their letters may look.
+      if (textMask && textMask[y * solid.w + x]) continue;
+      // Cheap first, dear second. Ink running to the sides at all is a
+      // precondition for ink running to the sides *thickly*, and testing it
+      // costs a few lookups where the thickness test costs a column each.
+      const span = 1 + run(solid, x, y, -1, 0, maxW) + run(solid, x, y, 1, 0, maxW);
+      if (span < minW) continue;
       const tall = 1 + run(solid, x, y, 0, -1, maxH) + run(solid, x, y, 0, 1, maxH);
       if (tall < minH || tall > maxH) continue;
+      const wide = 1 + thick(solid, x, y, -1, maxW, sp) + thick(solid, x, y, 1, maxW, sp);
+      if (wide < minW || wide > maxW) continue;
+      // A beam is the one thing that is notehead-shaped where it corners and is
+      // not a notehead. Leave a head in any direction but straight up or down —
+      // where its own stem runs off — and you are on paper within two staff
+      // spaces; a beam is a bar that runs until the group ends. Asked here,
+      // once per candidate, rather than inside the score, which is walked over
+      // dozens of times per note while it settles.
+      if (longestRun(solid, x, y, sp * 3) >= sp * 3) continue;
       const score = headScore(solid, x, y, sp);
       if (score <= 0.62) continue;
       // Off the staff, a notehead has to prove it is one: the page keeps its
@@ -1656,9 +1761,34 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
   // Noteheads are looked for in a copy with their holes painted in, so that a
   // half note is the same shape as a quarter note. One pass over the page does
   // for every staff on it — the staves of a page are engraved at one size.
+  //
+  // Painted in *before* the staff lines come off, which is not a detail. A hole
+  // is only a hole while something encloses it, and where a line grazes the top
+  // of a white notehead the rim there is as thin as the line and comes away
+  // with it — leaving a horseshoe, open at the top, with nothing inside it to
+  // fill. Whole notes and minims went missing exactly where a line touched
+  // them, which is wherever the engraver happened to put them. On the page as
+  // printed the rim is always whole, so that is where the counters are found;
+  // the lines come off afterwards, by which time the middle is ink and stays.
   const spacing = raw.map((s) => s.spacing).sort((a, b) => a - b)[raw.length >> 1];
-  const solid = fillHoles(clean, spacing);
-  const textBands = findTextBands(clean, raw);
+  //
+  // Both ways round, and the two put together. A counter the lines leave alone
+  // is found in the cleaned page, as it always was; one the lines broke open is
+  // found on the page as printed, where the rim is still whole. Neither finds
+  // what the other does.
+  const gentle = fillHoles(clean, spacing);
+  const repaired = removeStaffLines(fillHoles(bm, spacing, clean), raw);
+  const solid = { w: bm.w, h: bm.h, data: gentle.data };
+  for (let i = 0; i < solid.data.length; i++) solid.data[i] |= repaired.data[i];
+
+  const textMarks = findTextMarks(clean, raw);
+  // Painted into a mask once, so that reading a note costs one lookup rather
+  // than a walk through every word on the page.
+  const textMask = new Uint8Array(bm.w * bm.h);
+  for (const mk of textMarks) {
+    for (let y = mk.y0; y <= mk.y1; y++)
+      for (let x = mk.x0; x <= mk.x1; x++) textMask[y * bm.w + x] = 1;
+  }
   // What a notehead looks like here, taken from this page's own printing.
   const templates = learnHeadTemplate(solid, raw);
   const systems = groupSystems(clean, raw);
@@ -1700,7 +1830,7 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
         above ? (s.top - above.bottom) / 2 : Infinity,
         below ? (below.top - s.bottom) / 2 : Infinity,
       ];
-      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6, solid, textBands, reach, templates);
+      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6, solid, textMask, reach, templates);
       staves[staves.length - 1].bars = findBarlines(clean, s, heads);
       heads.forEach((h, i) => {
         notes.push({

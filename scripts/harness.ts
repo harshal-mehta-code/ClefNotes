@@ -11,7 +11,7 @@ import {
   toBitmap,
   findStaves,
   removeStaffLines,
-  findTextBands,
+  findTextMarks,
   fillHoles,
   learnHeadTemplate,
 } from '../src/lib/detect/notes';
@@ -41,10 +41,10 @@ export async function readPdf(b64: string) {
 
     const bm0 = toBitmap(ctx.getImageData(0, 0, canvas.width, canvas.height), false);
     const staves0 = findStaves(bm0);
-    const bands = findTextBands(removeStaffLines(bm0, staves0), staves0);
-    for (const [a, b] of bands) {
-      ctx.fillStyle = 'rgba(255,180,0,0.25)';
-      ctx.fillRect(0, a, canvas.width, b - a);
+    const bands = findTextMarks(removeStaffLines(bm0, staves0), staves0);
+    for (const m of bands) {
+      ctx.fillStyle = 'rgba(255,180,0,0.3)';
+      ctx.fillRect(m.x0, m.y0, m.x1 - m.x0 + 1, m.y1 - m.y0 + 1);
     }
 
     // Ring every notehead the reader believes in, hollow ones in a second
