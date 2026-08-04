@@ -104,6 +104,27 @@ check('the PDF imports', !info.error, info.error ?? '');
 check('staves are found', info.staves > 0, `${info.staves} staves on ${info.pages} pages`);
 check('noteheads are found', info.notes > 0, `${info.notes} notes`);
 
+// An engraved PDF says where its noteheads are, and they are read from the
+// file rather than found in a picture of it. Nothing is inferred, so nothing
+// is uncertain — and a reading with any doubt in it means the glyph path
+// silently stopped firing and the pixels quietly took over, which would show
+// up as nothing worse than a slower, slightly worse import.
+const certainty = await page.evaluate(() => {
+  const n = window.__cn.getState().score.notes;
+  return {
+    // Present *and* certain. Accepting a missing field here would pass against
+    // a build that predates the field entirely, which is exactly the stale
+    // build this check exists to catch.
+    sure: n.filter((x) => typeof x.confidence === 'number' && x.confidence >= 1).length,
+    total: n.length,
+  };
+});
+check(
+  "an engraved PDF's noteheads are read from the file, not from the picture",
+  certainty.total > 0 && certainty.sure === certainty.total,
+  `${certainty.sure} of ${certainty.total} certain`,
+);
+
 // Hollow heads — minims and semibreves — are half the notation and were once
 // missed wholesale, because erasing the staff lines erased their outlines too.
 // Nothing said so: they simply were not there, and clicking one sounded
@@ -166,7 +187,24 @@ check('the note that sounded is named on screen', (await page.locator('text=Hear
 const nearMiss = await page.evaluate(async () => {
   const s = window.__cn.getState();
   const sc = s.score;
-  const n = sc.notes[0];
+  /**
+   * A note with room around it, rather than simply the first one.
+   *
+   * The taps below land a space and a half to either side, and on a densely
+   * engraved page that is where the *next* note is — so the tap selected its
+   * neighbour, which is the app reading the page correctly and the check
+   * calling it a miss. What is being tested is that a tap need not be dead
+   * centre, and that only means anything where there is nothing else nearby
+   * for it to have meant.
+   */
+  const spaced = (n) => {
+    const st = sc.staves.find((x) => x.id === n.staff);
+    if (!st) return false;
+    return !sc.notes.some(
+      (o) => o.id !== n.id && o.staff === n.staff && Math.abs(o.x - n.x) < st.spacing * 2.6,
+    );
+  };
+  const n = sc.notes.find(spaced) ?? sc.notes[0];
   const st = sc.staves.find((x) => x.id === n.staff);
   const pg = sc.pages.find((p) => p.index === n.page);
   const svg = document.querySelectorAll('main svg')[sc.pages.indexOf(pg)];
@@ -374,6 +412,47 @@ check(
   pitchAfter === pitchBefore + 1,
   `${pitchBefore} → ${pitchAfter}`,
 );
+
+// Recognition will always miss something, so a miss has to be repairable.
+// A note put in by hand is a real note: it plays, it is saved, and it takes
+// part in a glide like any other.
+const added = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const st = s.score.staves[0];
+  const before = s.score.notes.length;
+  const note = s.addNoteAt(st.page, st.id, st.right - st.spacing * 2, st.lines[2]);
+  const after = window.__cn.getState().score;
+  return {
+    before,
+    after: after.notes.length,
+    onLattice: note ? note.step === 4 : false,
+    selected: after.notes.some((n) => n.id === window.__cn.getState().selected),
+    findable: after.notes.some((n) => n.id === note?.id),
+    id: note?.id,
+  };
+});
+check(
+  'a note the reader missed can be put in by hand',
+  added.after === added.before + 1 && added.findable && added.onLattice,
+  `${added.before} → ${added.after} notes`,
+);
+check('and it is selected, ready to correct', added.selected);
+
+// And the other way: a note that is not on the page comes off, corrections
+// and all, rather than haunting every glide over that bar forever.
+const removed = await page.evaluate((id) => {
+  const s = window.__cn.getState();
+  s.setAlter(id, 1);
+  s.removeNote(id);
+  const after = window.__cn.getState().score;
+  return { count: after.notes.length, gone: !after.notes.some((n) => n.id === id), alters: id in after.alters };
+}, added.id);
+check(
+  'and a note that is not there can be taken off',
+  removed.gone && removed.count === added.before,
+  `${added.after} → ${removed.count} notes`,
+);
+check('with its corrections, rather than leaving them to attach to something else', !removed.alters);
 
 // Setting a clef applies to that staff on every system — the difference
 // between one tap and twenty-three on a choral chart.

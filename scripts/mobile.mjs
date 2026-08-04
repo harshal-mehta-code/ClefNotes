@@ -160,17 +160,46 @@ await page.evaluate(async (steps) => {
   document.querySelector('main').scrollTop = 0;
 }, zoomSteps);
 
+/**
+ * Onto a page that has music on it.
+ *
+ * A score often opens on a title page, and one of these does: ten pages, the
+ * first two of them front matter with no staves at all. Taking whichever page
+ * happened to overlap the screen took that cover — showing four pixels of it
+ * at the top edge was enough — found no noteheads on it, and reported that the
+ * app could not play a note. Scrolling to the first page that has music, and
+ * then taking the page with the most of itself on screen, points the check at
+ * the music instead of at the cover.
+ */
+await page.evaluate(async () => {
+  const sc = window.__cn.getState().score;
+  const first = sc.pages.find((p) => sc.notes.some((n) => n.page === p.index));
+  if (!first) return;
+  document.querySelectorAll('main svg')[sc.pages.indexOf(first)]?.scrollIntoView({
+    block: 'center',
+  });
+  await new Promise((r) => setTimeout(r, 400));
+});
+
 // A tap on a notehead sounds it.
 const spot = await page.evaluate(() => {
-  const svg = [...document.querySelectorAll('main svg')].find((s) => {
+  const sc = window.__cn.getState().score;
+  const svgs = [...document.querySelectorAll('main svg')];
+  let svg = null;
+  let best = 0;
+  svgs.forEach((s, i) => {
+    const pg = sc.pages[i];
+    if (!pg || !sc.notes.some((n) => n.page === pg.index)) return;
     const r = s.getBoundingClientRect();
-    return r.top < 700 && r.bottom > 120;
+    const shown = Math.min(r.bottom, 700) - Math.max(r.top, 120);
+    if (shown > best) {
+      best = shown;
+      svg = s;
+    }
   });
   if (!svg) return null;
   const r = svg.getBoundingClientRect();
-  const sc = window.__cn.getState().score;
-  const idx = [...document.querySelectorAll('main svg')].indexOf(svg);
-  const pg = sc.pages[idx];
+  const pg = sc.pages[svgs.indexOf(svg)];
   // A note that is on screen right now.
   const notes = sc.notes.filter((n) => n.page === pg.index);
   for (const n of notes) {
@@ -225,9 +254,17 @@ check('a zoomed page pans sideways', zoom.pans);
 // and taking the page over so a slide can play a phrase. The page is zoomed in
 // here on purpose — that is when a sideways drag would otherwise pan, and the
 // hold has to win.
-const spot2 = await page.evaluate(() => {
+const spot2 = await page.evaluate(async () => {
   const sc = window.__cn.getState().score;
   const svgs = [...document.querySelectorAll('main svg')];
+  // Zooming in moved the page under the screen, and on a score that opens with
+  // front matter what is left in view can be a blank margin. Back to the music
+  // first, for the same reason as above.
+  const first = sc.pages.find((p) => sc.notes.some((n) => n.page === p.index));
+  if (first) {
+    svgs[sc.pages.indexOf(first)]?.scrollIntoView({ block: 'center' });
+    await new Promise((r) => setTimeout(r, 400));
+  }
   for (const svg of svgs) {
     const r = svg.getBoundingClientRect();
     if (r.bottom < 160 || r.top > 640) continue;

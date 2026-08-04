@@ -59,6 +59,7 @@ for (const input of inputs) {
     const hollow = p.notes.filter((n) => !n.filled).length;
     console.log(
       `page ${p.index + 1}: ${p.ms}ms, ${p.staves.length} staves, ${p.notes.length} notes ` +
+        `[${p.vector == null ? "pixels" : "glyphs " + p.vector}] ` +
         `(${hollow} hollow, ${p.notes.length - hollow} filled)`,
     );
   }

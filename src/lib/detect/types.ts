@@ -140,6 +140,17 @@ export interface DetectedNote {
   /** True for a solid notehead; hollow ones are minims and semibreves. */
   filled: boolean;
   /**
+   * How sure the reader is that this is a note at all, from 0 to 1.
+   *
+   * A note read out of a PDF's own glyphs is certain, and so is one you placed
+   * yourself. One found in the pixels is not, and the app says so rather than
+   * presenting a guess and a fact in the same ink — a reader that never admits
+   * doubt is trusted until the moment it is wrong, which is the worst possible
+   * order. Old scores saved before this existed have no value here; absent
+   * means certain, because that is how they were shown.
+   */
+  confidence?: number;
+  /**
    * A sharp, natural or flat printed immediately before this notehead, if one
    * was found. Null means none was, and the key signature applies.
    */

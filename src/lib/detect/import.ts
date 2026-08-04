@@ -1,5 +1,6 @@
-import { readPage } from './notes';
+import { findStaves, readPage, toBitmap } from './notes';
 import { renderPhoto } from './photo';
+import { readVectorHeads } from './vector';
 import type { DetectedNote, DetectedStaff, PageScore, ScorePage } from './types';
 
 /**
@@ -45,6 +46,12 @@ interface Rendered {
   canvas: HTMLCanvasElement;
   /** Photographs need the thresholder that copes with uneven light. */
   local: boolean;
+  /**
+   * The page itself, still open, when it is a PDF — so the noteheads can be
+   * read out of the file's glyphs instead of out of the picture of them.
+   */
+  page?: any;
+  viewport?: { transform: number[] };
 }
 
 /**
@@ -113,10 +120,13 @@ async function* renderPdf(file: File, onProgress?: ImportProgress): AsyncGenerat
     if (!ctx) continue;
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Rendered before the glyphs are read, and only cleaned up after: drawing
+    // the page is what makes the browser load its embedded fonts, and reading
+    // a notehead's shape out of one means having it installed.
     await page.render({ canvasContext: ctx, viewport }).promise;
-    page.cleanup();
 
-    yield { canvas, local: false };
+    yield { canvas, local: false, page, viewport };
+    page.cleanup();
   }
 }
 
@@ -130,11 +140,27 @@ async function assemble(
   const staves: DetectedStaff[] = [];
   const notes: DetectedNote[] = [];
 
-  for await (const { canvas, local } of source) {
+  for await (const { canvas, local, page, viewport } of source) {
     const index = pages.length;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) continue;
-    const reading = readPage(ctx.getImageData(0, 0, canvas.width, canvas.height), index, local);
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+    // Where the noteheads are, from the file, if this is a file that says. The
+    // staves have to be found first either way, and are found twice for a PDF
+    // — the second time inside `readPage`. It costs a few tens of milliseconds
+    // against the seconds the glyph path saves, and it keeps `readPage` a
+    // single function anyone can follow.
+    let heads = null;
+    if (page && viewport) {
+      try {
+        heads = await readVectorHeads(page, viewport, findStaves(toBitmap(image, local)));
+      } catch {
+        heads = null;
+      }
+    }
+
+    const reading = readPage(image, index, local, heads);
     staves.push(...reading.staves);
     notes.push(...reading.notes);
     pages.push({

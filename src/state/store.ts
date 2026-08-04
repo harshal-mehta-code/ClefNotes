@@ -5,6 +5,7 @@ import { INSTRUMENTS, type InstrumentId } from '../lib/audio/instruments';
 import { importScore } from '../lib/detect/import';
 import {
   noteMidi,
+  stepAt,
   type Alter,
   type ClefId,
   type DetectedNote,
@@ -88,6 +89,10 @@ interface AppState {
   setVisiblePage: (page: number) => void;
   nudgeSelected: (steps: number) => void;
   resetNudges: () => void;
+  /** Add a note the reader missed, at a point on a staff. */
+  addNoteAt: (page: number, staffId: string, x: number, y: number) => DetectedNote | null;
+  /** Take away a note that is not on the page. */
+  removeNote: (noteId: string) => void;
   /**
    * Say what accidental is printed on a note, overriding what was read there.
    * `null` means none is — which is a different statement from saying nothing,
@@ -159,18 +164,30 @@ export const useApp = create<AppState>((set, get) => ({
   },
   setZoom: (zoom) => set({ zoom: Math.min(3, Math.max(0.6, zoom)) }),
   zoomBy: (step) =>
-    set({ zoom: Math.min(3, Math.max(0.6, Math.round((get().zoom + step) * 100) / 100)) }),
+    set({
+      zoom: Math.min(3, Math.max(0.6, Math.round((get().zoom + step) * 100) / 100)),
+    }),
   setShowNotes: (showNotes) => set({ showNotes }),
 
   importFiles: async (files) => {
     if (!files.length) return;
-    set({ loading: true, error: null, progress: { label: 'Opening…', fraction: 0 } });
+    set({
+      loading: true,
+      error: null,
+      progress: { label: 'Opening…', fraction: 0 },
+    });
     try {
       const score = await importScore(files, (label, fraction) =>
         set({ progress: { label, fraction } }),
       );
       await db.scores.put(score);
-      set({ score, view: 'sheet', loading: false, progress: null, selected: null });
+      set({
+        score,
+        view: 'sheet',
+        loading: false,
+        progress: null,
+        selected: null,
+      });
       await get().refreshLibrary();
     } catch (e) {
       set({
@@ -288,7 +305,10 @@ export const useApp = create<AppState>((set, get) => ({
     if (!score || !selected) return;
     const next = {
       ...score,
-      nudges: { ...score.nudges, [selected]: (score.nudges[selected] ?? 0) + steps },
+      nudges: {
+        ...score.nudges,
+        [selected]: (score.nudges[selected] ?? 0) + steps,
+      },
     };
     set({ score: next });
     persist(next);
@@ -306,6 +326,64 @@ export const useApp = create<AppState>((set, get) => ({
     const note = next.notes.find((n) => n.id === noteId);
     const staff = note && next.staves.find((s) => s.id === note.staff);
     if (note && staff) get().sound(noteMidi(note, staff, next));
+  },
+
+  /**
+   * Put a note where the reader did not find one.
+   *
+   * Recognition will always miss something, and until now a miss was permanent:
+   * you could hear the pitch by holding a finger on the spot, but the note was
+   * not there to click, not there in a glide, and not there tomorrow. One tap
+   * is a cheaper repair than any amount of further tuning could buy, and it
+   * cannot be wrong — you are looking straight at the page.
+   */
+  addNoteAt: (page, staffId, x, y) => {
+    const score = get().score;
+    if (!score) return null;
+    const staff = score.staves.find((s) => s.id === staffId);
+    if (!staff) return null;
+    const note: DetectedNote = {
+      id: `${staffId}u${Date.now().toString(36)}`,
+      page,
+      staff: staffId,
+      x,
+      // On the line or space it belongs to, not on the pixel you touched.
+      y: staff.lines[4] - stepAt(staff, y) * (staff.spacing / 2),
+      step: stepAt(staff, y),
+      filled: true,
+      confidence: 1,
+      accidental: null,
+    };
+    const next = {
+      ...score,
+      notes: [...score.notes, note].sort((a, b) => a.x - b.x),
+    };
+    set({ score: next, selected: note.id });
+    persist(next);
+    get().sound(noteMidi(note, staff, next));
+    return note;
+  },
+
+  /**
+   * Take away a note that is not on the page. Its corrections go with it —
+   * leaving them behind would silently reattach them to a later note that
+   * happened to be given the same id.
+   */
+  removeNote: (noteId) => {
+    const score = get().score;
+    if (!score) return;
+    const nudges = { ...score.nudges };
+    const alters = { ...score.alters };
+    delete nudges[noteId];
+    delete alters[noteId];
+    const next = {
+      ...score,
+      notes: score.notes.filter((n) => n.id !== noteId),
+      nudges,
+      alters,
+    };
+    set({ score: next, selected: null });
+    persist(next);
   },
 
   resetNudges: () => {

@@ -15,6 +15,7 @@ import {
   fillHoles,
   learnHeadTemplate,
 } from '../src/lib/detect/notes';
+import { readVectorHeads } from '../src/lib/detect/vector';
 
 lib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -34,14 +35,15 @@ export async function readPdf(b64: string) {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     await pdfPage.render({ canvas, canvasContext: ctx, viewport }).promise;
-    pdfPage.cleanup();
 
     const t0 = performance.now();
-    const reading = readPage(ctx.getImageData(0, 0, canvas.width, canvas.height), i, false);
-
-    const bm0 = toBitmap(ctx.getImageData(0, 0, canvas.width, canvas.height), false);
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const bm0 = toBitmap(image, false);
     const staves0 = findStaves(bm0);
-    const bands = findTextMarks(removeStaffLines(bm0, staves0), staves0);
+    const heads = await readVectorHeads(pdfPage, viewport, staves0);
+    const reading = readPage(image, i, false, heads);
+
+    const bands = heads ? [] : findTextMarks(removeStaffLines(bm0, staves0), staves0);
     for (const m of bands) {
       ctx.fillStyle = 'rgba(255,180,0,0.3)';
       ctx.fillRect(m.x0, m.y0, m.x1 - m.x0 + 1, m.y1 - m.y0 + 1);
@@ -64,9 +66,11 @@ export async function readPdf(b64: string) {
       ctx.stroke();
     }
 
+    pdfPage.cleanup();
     pages.push({
       index: i,
       ms: Math.round(performance.now() - t0),
+      vector: heads ? heads.length : null,
       bands,
       png: canvas.toDataURL('image/png'),
       staves: reading.staves.map((s) => ({
@@ -84,6 +88,7 @@ export async function readPdf(b64: string) {
         y: Math.round(n.y),
         step: n.step,
         filled: n.filled,
+        confidence: n.confidence,
         accidental: n.accidental,
       })),
     });
@@ -162,7 +167,11 @@ export async function holes(b64: string, pageIndex: number) {
     if (data[p] || seen[p]) continue;
     seen[p] = 1;
     stack.push(p);
-    let x0 = w, x1 = 0, y0 = h, y1 = 0, n = 0;
+    let x0 = w,
+      x1 = 0,
+      y0 = h,
+      y1 = 0,
+      n = 0;
     while (stack.length) {
       const q = stack.pop()!;
       n++;
@@ -172,10 +181,10 @@ export async function holes(b64: string, pageIndex: number) {
       if (x > x1) x1 = x;
       if (y < y0) y0 = y;
       if (y > y1) y1 = y;
-      if (x > 0 && !data[q - 1] && !seen[q - 1]) (seen[q - 1] = 1), stack.push(q - 1);
-      if (x < w - 1 && !data[q + 1] && !seen[q + 1]) (seen[q + 1] = 1), stack.push(q + 1);
-      if (y > 0 && !data[q - w] && !seen[q - w]) (seen[q - w] = 1), stack.push(q - w);
-      if (y < h - 1 && !data[q + w] && !seen[q + w]) (seen[q + w] = 1), stack.push(q + w);
+      if (x > 0 && !data[q - 1] && !seen[q - 1]) ((seen[q - 1] = 1), stack.push(q - 1));
+      if (x < w - 1 && !data[q + 1] && !seen[q + 1]) ((seen[q + 1] = 1), stack.push(q + 1));
+      if (y > 0 && !data[q - w] && !seen[q - w]) ((seen[q - w] = 1), stack.push(q - w));
+      if (y < h - 1 && !data[q + w] && !seen[q + w]) ((seen[q + w] = 1), stack.push(q + w));
     }
     if (n > sp * sp * 0.9 || x1 - x0 + 1 > sp * 1.5 || y1 - y0 + 1 > sp * 1.2) continue;
     out.push({ x: x0, y: y0, w: (x1 - x0 + 1) / sp, h: (y1 - y0 + 1) / sp });

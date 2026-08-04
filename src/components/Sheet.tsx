@@ -55,6 +55,19 @@ const Dots = memo(function Dots({
         if (!staff) return null;
         const on = selected === n.id;
         const edited = (score.nudges[n.id] ?? 0) !== 0 || n.id in (score.alters ?? {});
+        /**
+         * A reading the detector only just believed. Drawn as an outline rather
+         * than a solid, so that a guess and a certainty are not shown in the
+         * same ink.
+         *
+         * Almost nothing is marked this way, and that is the point: on a PDF
+         * whose noteheads were read out of the file there is nothing to doubt,
+         * and even on a photograph the reader is genuinely sure of most of what
+         * it keeps — anything that matched poorly was thrown out rather than
+         * shown. What is left here is the handful that only half looked right,
+         * which is where a wrong note will be if there is one.
+         */
+        const unsure = !on && !edited && (n.confidence ?? 1) < 0.6;
         return (
           <ellipse
             key={n.id}
@@ -62,8 +75,20 @@ const Dots = memo(function Dots({
             cy={n.y}
             rx={staff.spacing * 0.78}
             ry={staff.spacing * 0.6}
-            fill={on ? 'rgb(var(--pink))' : edited ? 'rgb(var(--gold))' : 'rgb(var(--blue))'}
-            opacity={on ? 0.5 : edited ? 0.36 : 0.16}
+            fill={
+              unsure
+                ? 'none'
+                : on
+                  ? 'rgb(var(--pink))'
+                  : edited
+                    ? 'rgb(var(--gold))'
+                    : 'rgb(var(--blue))'
+            }
+            stroke={unsure ? 'rgb(var(--blue))' : 'none'}
+            strokeWidth={unsure ? 2 : 0}
+            strokeDasharray={unsure ? '4 3' : undefined}
+            vectorEffect="non-scaling-stroke"
+            opacity={on ? 0.5 : edited ? 0.36 : unsure ? 0.5 : 0.16}
           />
         );
       })}
@@ -96,6 +121,8 @@ export default function Sheet() {
   const setStaffSharps = useApp((s) => s.setStaffSharps);
   const setAlter = useApp((s) => s.setAlter);
   const nudgeSelected = useApp((s) => s.nudgeSelected);
+  const addNoteAt = useApp((s) => s.addNoteAt);
+  const removeNote = useApp((s) => s.removeNote);
 
   const setVisiblePage = useApp((s) => s.setVisiblePage);
   const pageRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -110,7 +137,12 @@ export default function Sheet() {
   const [aim, setAim] = useState<Aim | null>(null);
   const aimTimer = useRef<number | undefined>(undefined);
   /** The pitch that last sounded, named — the app's answer, for you to check. */
-  const [heard, setHeard] = useState<{ note: string | null; label: string } | null>(null);
+  const [heard, setHeard] = useState<{
+    note: string | null;
+    label: string;
+    /** Where on the page it happened — what "add a note here" needs to know. */
+    at?: { page: number; staff: string; x: number; y: number };
+  } | null>(null);
   /** The last clef change, so it can be narrowed back to a single staff. */
   const [clefEdit, setClefEdit] = useState<{
     staffId: string;
@@ -266,7 +298,19 @@ export default function Sheet() {
     let best: DetectedStaff | null = null;
     let bestDistance = Infinity;
     for (const s of staves) {
-      const reach = s.spacing * 3.2;
+      /**
+       * As far out as the reader is willing to find a note, and no less.
+       *
+       * These two numbers have to agree, and they did not: recognition accepts
+       * a notehead up to four and a half spaces off the staff — that is what
+       * ledger lines are for, and a bass part lives down there — while a tap
+       * only reached three and a bit. A note found at four spaces was drawn on
+       * the page, was in every glide, and could not be tapped: aiming at its
+       * lower half fell outside every staff and did nothing at all. The staff
+       * nearest the point still wins, so reaching further cannot hand a point
+       * to the wrong staff; it only stops the app disowning notes it found.
+       */
+      const reach = s.spacing * 4.5;
       const distance = y < s.top ? s.top - y : y > s.bottom ? y - s.bottom : 0;
       if (distance <= reach && distance < bestDistance) {
         best = s;
@@ -351,7 +395,11 @@ export default function Sheet() {
       soundNote(note);
     } else {
       select(null);
-      setHeard({ note: null, label: target.label });
+      setHeard({
+        note: null,
+        label: target.label,
+        at: { page: target.page, staff: staff.id, x: target.x, y: target.y },
+      });
       sound(stepToMidi(stepAt(staff, target.y), staff.clef, staffSharps(staff, score)));
     }
   };
@@ -805,7 +853,10 @@ export default function Sheet() {
           <button
             className="btn btn-ghost"
             onClick={() => {
-              applyClefs({ ...clefEdit.prev, [clefEdit.staffId]: clefEdit.clef });
+              applyClefs({
+                ...clefEdit.prev,
+                [clefEdit.staffId]: clefEdit.clef,
+              });
               setClefEdit(null);
             }}
           >
@@ -851,9 +902,47 @@ export default function Sheet() {
                   </button>
                 ))}
               </div>
+              {/* A note the reader imagined. Taking it away is the other half
+                  of being able to add one, and without it a phantom stays in
+                  every glide over that bar for as long as the score exists. */}
+              <button
+                className="btn btn-ghost ml-1"
+                title="There is no note here on the page — take it off"
+                onClick={() => {
+                  removeNote(heardNote.id);
+                  setHeard(null);
+                }}
+              >
+                Not a note
+              </button>
             </>
           ) : (
-            <span className="lbl hidden sm:inline">from the staff line</span>
+            <>
+              <span className="lbl hidden sm:inline">from the staff line</span>
+              {/* Nothing was found here, and you are looking straight at one.
+                  Putting it in makes it clickable, glideable and permanent —
+                  which no amount of further tuning of the reader could do for
+                  the note it happens to miss on your page. */}
+              {heard.at && (
+                <button
+                  className="btn ml-1"
+                  title="Add a note here, so it plays with the rest"
+                  onClick={() => {
+                    const spot = heard.at!;
+                    const added = addNoteAt(spot.page, spot.staff, spot.x, spot.y);
+                    if (added) {
+                      const staff = score.staves.find((s) => s.id === added.staff);
+                      setHeard({
+                        note: added.id,
+                        label: staff ? noteName(added, staff, score) : heard.label,
+                      });
+                    }
+                  }}
+                >
+                  + Add note
+                </button>
+              )}
+            </>
           )}
           {carried && (
             <span

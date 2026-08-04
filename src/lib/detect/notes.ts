@@ -1,4 +1,5 @@
 import type { Alter, ClefId, DetectedNote, DetectedStaff } from './types';
+import { nearestStaff, type VectorHead } from './vector';
 
 /**
  * Reading a page.
@@ -155,7 +156,7 @@ export function findStaves(bm: Bitmap): RawStaff[] {
   if (runStart >= 0) centres.push((runStart + h - 1) / 2);
 
   const staves: RawStaff[] = [];
-  for (let i = 0; i + 4 < centres.length; ) {
+  for (let i = 0; i + 4 < centres.length;) {
     const group = centres.slice(i, i + 5);
     const gaps: number[] = [];
     for (let k = 1; k < 5; k++) gaps.push(group[k] - group[k - 1]);
@@ -489,10 +490,10 @@ export function fillHoles(bm: Bitmap, spacing: number, walls?: Bitmap): Bitmap {
       if (x > x1) x1 = x;
       if (y < y0) y0 = y;
       if (y > y1) y1 = y;
-      if (x > 0 && !data[q - 1] && !seen[q - 1]) (seen[q - 1] = 1), stack.push(q - 1);
-      if (x < w - 1 && !data[q + 1] && !seen[q + 1]) (seen[q + 1] = 1), stack.push(q + 1);
-      if (y > 0 && !data[q - w] && !seen[q - w]) (seen[q - w] = 1), stack.push(q - w);
-      if (y < h - 1 && !data[q + w] && !seen[q + w]) (seen[q + w] = 1), stack.push(q + w);
+      if (x > 0 && !data[q - 1] && !seen[q - 1]) ((seen[q - 1] = 1), stack.push(q - 1));
+      if (x < w - 1 && !data[q + 1] && !seen[q + 1]) ((seen[q + 1] = 1), stack.push(q + 1));
+      if (y > 0 && !data[q - w] && !seen[q - w]) ((seen[q - w] = 1), stack.push(q - w));
+      if (y < h - 1 && !data[q + w] && !seen[q + w]) ((seen[q + w] = 1), stack.push(q + w));
     }
     if (region.length > maxArea || x1 - x0 + 1 > maxW || y1 - y0 + 1 > maxH) continue;
     /**
@@ -629,7 +630,13 @@ export function findTextMarks(clean: Bitmap, staves: RawStaff[]): TextMark[] {
   }
 
   const seen = new Uint8Array(w * h);
-  const marks: Array<{ x: number; x0: number; x1: number; y0: number; y1: number }> = [];
+  const marks: Array<{
+    x: number;
+    x0: number;
+    x1: number;
+    y0: number;
+    y1: number;
+  }> = [];
   const stack: number[] = [];
   for (let p = 0; p < data.length; p++) {
     // Nothing whose every pixel is inside a staff can be a word, so it is not
@@ -681,7 +688,7 @@ export function findTextMarks(clean: Bitmap, staves: RawStaff[]): TextMark[] {
   const tolerance = Math.max(2, Math.round(sp * 0.35));
   marks.sort((a, b) => a.y1 - b.y1);
   const text: TextMark[] = [];
-  for (let i = 0; i < marks.length; ) {
+  for (let i = 0; i < marks.length;) {
     let j = i;
     while (j + 1 < marks.length && marks[j + 1].y1 - marks[i].y1 <= tolerance) j++;
     const group = marks.slice(i, j + 1);
@@ -746,7 +753,9 @@ function hasStem(clean: Bitmap, x: number, y: number, sp: number): boolean {
 function hasLedger(clean: Bitmap, staff: RawStaff, x: number, step: number): boolean {
   const sp = staff.spacing;
   // The line it would sit on, or the nearer of the two it sits between.
-  for (const line of step > 9 ? [step + (step % 2), step - (step % 2)] : [step - (step % 2), step + (step % 2)]) {
+  for (const line of step > 9
+    ? [step + (step % 2), step - (step % 2)]
+    : [step - (step % 2), step + (step % 2)]) {
     const y = Math.round(staff.lines[4] - (line * sp) / 2);
     if (y < 0 || y >= clean.h) continue;
     // A ledger line is thin and reaches past the notehead on both sides. Both
@@ -849,6 +858,12 @@ export interface HeadTemplate {
    * them, so the bar is set by real notes rather than by a number I chose.
    */
   cut: number;
+  /**
+   * How well a *typical* notehead of this page matches — the yardstick doubt is
+   * measured against. A mark scoring this well is as good a note as the page
+   * prints; one scoring at the cut only just counts as one at all.
+   */
+  good: number;
 }
 
 function templateFrom(
@@ -857,13 +872,14 @@ function templateFrom(
   ry: number,
   exemplars: number,
   cut = 0.5,
+  good = 1,
 ): HeadTemplate {
   let mean = 0;
   for (const v of data) mean += v;
   mean /= data.length;
   let norm = 0;
   for (const v of data) norm += (v - mean) * (v - mean);
-  return { rx, ry, data, mean, norm: Math.sqrt(norm) || 1, exemplars, cut };
+  return { rx, ry, data, mean, norm: Math.sqrt(norm) || 1, exemplars, cut, good };
 }
 
 /**
@@ -909,9 +925,28 @@ function matchOne(bm: Bitmap, t: HeadTemplate, cx: number, cy: number): number {
   return norm < 1e-6 ? 0 : cross / (norm * t.norm);
 }
 
-/** Whether a mark clears the bar for any of the shapes the page prints. */
-function matches(bm: Bitmap, ts: HeadTemplate[], cx: number, cy: number): boolean {
-  return ts.some((t) => matchOne(bm, t, cx, cy) >= t.cut);
+/**
+ * How far a mark clears the bar by, for the best of the shapes this page
+ * prints. Negative means it does not clear it at all.
+ *
+ * The margin is kept rather than thrown away with the comparison, because it
+ * is the one honest measure of doubt the reader has. A mark that scores a hair
+ * over the threshold and one that scores far above it are both "a note" as far
+ * as the answer goes, and they are not remotely the same claim.
+ */
+function margin(bm: Bitmap, ts: HeadTemplate[], cx: number, cy: number): number {
+  let best = -Infinity;
+  for (const t of ts) {
+    // Scaled by the distance from the bar to a typical notehead of this page,
+    // so that 0 is "only just a note" and 1 is "as good as the ones around
+    // it". Left as a ratio rather than a raw correlation because the raw
+    // number means nothing without knowing how tightly this engraving prints:
+    // a page of clean, identical heads and a soft photograph of the same page
+    // have quite different ideas of a good score, and both are right.
+    const span = Math.max(0.05, t.good - t.cut);
+    best = Math.max(best, (matchOne(bm, t, cx, cy) - t.cut) / span);
+  }
+  return best;
 }
 
 /**
@@ -973,7 +1008,7 @@ export function learnHeadTemplate(solid: Bitmap, staves: RawStaff[]): HeadTempla
   // averages the smear rather than the shape.
   for (const p of picks) {
     for (let step = Math.max(1, Math.round(sp / 4)); step >= 1; step >>= 1) {
-      for (let moved = true; moved; ) {
+      for (let moved = true; moved;) {
         moved = false;
         for (const [dx, dy] of [
           [step, 0],
@@ -997,7 +1032,8 @@ export function learnHeadTemplate(solid: Bitmap, staves: RawStaff[]): HeadTempla
   picks.sort((a, b) => b.score - a.score);
   const used: typeof picks = [];
   for (const p of picks) {
-    if (used.some((u) => Math.abs(u.x - p.x) < sp * 0.8 && Math.abs(u.y - p.y) < sp * 0.5)) continue;
+    if (used.some((u) => Math.abs(u.x - p.x) < sp * 0.8 && Math.abs(u.y - p.y) < sp * 0.5))
+      continue;
     used.push(p);
     if (used.length >= 400) break;
   }
@@ -1057,6 +1093,7 @@ export function learnHeadTemplate(solid: Bitmap, staves: RawStaff[]): HeadTempla
     const scores = used.map((u) => matchOne(solid, t, u.x, u.y)).sort((a, b) => a - b);
     const low = scores[Math.floor(scores.length * 0.1)];
     t.cut = Math.min(0.72, Math.max(0.4, low - 0.08));
+    t.good = scores[scores.length >> 1];
   }
   return [learned, widened];
 }
@@ -1078,7 +1115,13 @@ export function findHeads(
    * the usual reach — see `readPage`. */
   reach: [number, number] = [Infinity, Infinity],
   templates: HeadTemplate[] = learnHeadTemplate(solid, [staff]),
-): Array<{ x: number; y: number; step: number; filled: boolean }> {
+): Array<{
+  x: number;
+  y: number;
+  step: number;
+  filled: boolean;
+  confidence: number;
+}> {
   const sp = staff.spacing;
   const rx = sp * 0.62;
   const ry = sp * 0.46;
@@ -1104,7 +1147,12 @@ export function findHeads(
   // this — a stem or a barline is a tenth of the width a notehead has to be.
   const maxH = sp * 2.5;
 
-  const candidates: Array<{ x: number; y: number; score: number }> = [];
+  const candidates: Array<{
+    x: number;
+    y: number;
+    score: number;
+    confidence?: number;
+  }> = [];
   for (let y = yTop; y <= yBot; y += stride) {
     for (let x = xFrom; x <= staff.right; x += stride) {
       if (!ink(solid, x, y)) continue;
@@ -1161,7 +1209,7 @@ export function findHeads(
   const climb = (c: { x: number; y: number; score: number }) => {
     let { x, y, score } = c;
     for (let step = Math.max(1, Math.round(sp / 6)); step >= 1; step >>= 1) {
-      for (let moved = true; moved; ) {
+      for (let moved = true; moved;) {
         moved = false;
         for (const [dx, dy] of [
           [step, 0],
@@ -1225,7 +1273,11 @@ export function findHeads(
     // The last word: does this look like the noteheads this page prints? Size
     // and solidity got it this far, and both are satisfied by things that are
     // not notes — a sharp with its cells painted in most of all.
-    if (!matches(solid, templates, c.x, c.y)) continue;
+    const clearance = margin(solid, templates, c.x, c.y);
+    if (clearance < 0) continue;
+    // How comfortably it cleared, against the page's own noteheads. Marks that
+    // only just scraped in are the ones worth showing you.
+    c.confidence = Math.min(1, clearance);
     kept.push(c);
   }
 
@@ -1240,6 +1292,7 @@ export function findHeads(
       // description of a note already found — never a way of finding one, which
       // is what it used to be and why half notes went missing.
       filled: ellipseInk(clean, k.x, k.y, rx * 0.38, ry * 0.38) > 0.55,
+      confidence: k.confidence ?? 1,
     }))
     .sort((a, b) => a.x - b.x);
 }
@@ -1280,7 +1333,7 @@ export function findBarlines(
   }
 
   const out: number[] = [];
-  for (let i = 0; i < full.length; ) {
+  for (let i = 0; i < full.length;) {
     let j = i;
     while (j + 1 < full.length && full[j + 1] - full[j] <= 2) j++;
     const centre = (full[i] + full[j]) / 2;
@@ -1299,8 +1352,18 @@ export function findBarlines(
  * places — F♯ on the top line of a treble staff, B♭ on the middle line — which
  * is what makes the two readable apart by geometry rather than by shape.
  */
-const SHARP_START: Record<ClefId, number> = { treble: 8, treble8: 8, bass: 6, alto: 7 };
-const FLAT_START: Record<ClefId, number> = { treble: 4, treble8: 4, bass: 2, alto: 3 };
+const SHARP_START: Record<ClefId, number> = {
+  treble: 8,
+  treble8: 8,
+  bass: 6,
+  alto: 7,
+};
+const FLAT_START: Record<ClefId, number> = {
+  treble: 4,
+  treble8: 4,
+  bass: 2,
+  alto: 3,
+};
 /** Each subsequent accidental steps a fourth down or a fifth up, alternating. */
 const SHARP_WALK = [0, -3, 4, -3, -3, 4, -3];
 const FLAT_WALK = [0, 3, -4, 3, -4, 3, -4];
@@ -1636,7 +1699,10 @@ export function readKeySignature(
   // be separated from whatever was printed beside it — so that answers null and
   // the key is inherited instead.
   const cancelled = marks.length > 0 && marks.every((m) => m.kind === 'natural');
-  return { sharps: cancelled ? 0 : null, endX: cancelled ? marks[marks.length - 1].g.x1 : endX };
+  return {
+    sharps: cancelled ? 0 : null,
+    endX: cancelled ? marks[marks.length - 1].g.x1 : endX,
+  };
 }
 
 // --- accidentals beside a note ---------------------------------------------
@@ -1751,8 +1817,22 @@ export interface PageReading {
 /**
  * Read one rendered page. `local` picks the thresholder that copes with uneven
  * lighting, which a photograph needs and a rendered PDF does not.
+ *
+ * `heads`, when given, are noteheads read out of the PDF's own glyphs rather
+ * than found in the pixels — exact positions, from the file that drew them. See
+ * `vector.ts`. Everything else on the page is still read from the picture: the
+ * staff lines, the key signature, the barlines and the accidentals. That is not
+ * a half-measure but the right split. Where the five lines are, and what is
+ * printed beside a note, are questions the pixels answer well and that the
+ * glyph stream answers only with more machinery; where the notes are is the
+ * question the pixels answer worst and the file answers exactly.
  */
-export function readPage(image: ImageData, pageIndex: number, local = false): PageReading {
+export function readPage(
+  image: ImageData,
+  pageIndex: number,
+  local = false,
+  heads: VectorHead[] | null = null,
+): PageReading {
   const bm = toBitmap(image, local);
   const raw = findStaves(bm);
   if (!raw.length) return { staves: [], notes: [] };
@@ -1776,21 +1856,30 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
   // is found in the cleaned page, as it always was; one the lines broke open is
   // found on the page as printed, where the rim is still whole. Neither finds
   // what the other does.
-  const gentle = fillHoles(clean, spacing);
-  const repaired = removeStaffLines(fillHoles(bm, spacing, clean), raw);
-  const solid = { w: bm.w, h: bm.h, data: gentle.data };
-  for (let i = 0; i < solid.data.length; i++) solid.data[i] |= repaired.data[i];
+  //
+  // None of it is needed when the file said where the noteheads are — which is
+  // most of the reason a PDF that can be read this way imports several times
+  // faster than one that cannot.
+  let solid: Bitmap | null = null;
+  let textMask: Uint8Array | null = null;
+  let templates: HeadTemplate[] = [];
+  if (!heads) {
+    const gentle = fillHoles(clean, spacing);
+    const repaired = removeStaffLines(fillHoles(bm, spacing, clean), raw);
+    solid = { w: bm.w, h: bm.h, data: gentle.data };
+    for (let i = 0; i < solid.data.length; i++) solid.data[i] |= repaired.data[i];
 
-  const textMarks = findTextMarks(clean, raw);
-  // Painted into a mask once, so that reading a note costs one lookup rather
-  // than a walk through every word on the page.
-  const textMask = new Uint8Array(bm.w * bm.h);
-  for (const mk of textMarks) {
-    for (let y = mk.y0; y <= mk.y1; y++)
-      for (let x = mk.x0; x <= mk.x1; x++) textMask[y * bm.w + x] = 1;
+    const textMarks = findTextMarks(clean, raw);
+    // Painted into a mask once, so that reading a note costs one lookup rather
+    // than a walk through every word on the page.
+    textMask = new Uint8Array(bm.w * bm.h);
+    for (const mk of textMarks) {
+      for (let y = mk.y0; y <= mk.y1; y++)
+        for (let x = mk.x0; x <= mk.x1; x++) textMask[y * bm.w + x] = 1;
+    }
+    // What a notehead looks like here, taken from this page's own printing.
+    templates = learnHeadTemplate(solid, raw);
   }
-  // What a notehead looks like here, taken from this page's own printing.
-  const templates = learnHeadTemplate(solid, raw);
   const systems = groupSystems(clean, raw);
 
   const staves: DetectedStaff[] = [];
@@ -1830,9 +1919,28 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
         above ? (s.top - above.bottom) / 2 : Infinity,
         below ? (below.top - s.bottom) / 2 : Infinity,
       ];
-      const heads = findHeads(clean, s, key.endX + s.spacing * 0.6, solid, textMask, reach, templates);
-      staves[staves.length - 1].bars = findBarlines(clean, s, heads);
-      heads.forEach((h, i) => {
+      const from = key.endX + s.spacing * 0.6;
+      // Everything on this staff, right up to the clef — the cutoff below is
+      // there to stop the *pixel* reader mistaking a clef or a key signature
+      // for a pair of noteheads, and a glyph that is a notehead cannot be
+      // either of those. Applying it here only loses notes printed early in
+      // the bar.
+      const mine = heads
+        ? heads
+            .filter((h) => nearestStaff(raw, h.x, h.y) === s)
+            .map((h) => ({
+              x: h.x,
+              y: h.y,
+              // Snap to the line or space it was drawn on. The file's own
+              // position is already exact; this only removes the fraction of a
+              // pixel the rendering scale leaves behind.
+              step: Math.round((s.lines[4] - h.y) / (s.spacing / 2)),
+              filled: h.filled,
+              confidence: 1,
+            }))
+        : findHeads(clean, s, from, solid!, textMask, reach, templates);
+      staves[staves.length - 1].bars = findBarlines(clean, s, mine);
+      mine.forEach((h, i) => {
         notes.push({
           id: `${id}n${i}`,
           page: pageIndex,
@@ -1841,7 +1949,8 @@ export function readPage(image: ImageData, pageIndex: number, local = false): Pa
           y: h.y,
           step: h.step,
           filled: h.filled,
-          accidental: readAccidental(clean, s, h, heads),
+          confidence: h.confidence,
+          accidental: readAccidental(clean, s, h, mine),
         });
       });
     });
