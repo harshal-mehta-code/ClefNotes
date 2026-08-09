@@ -570,7 +570,20 @@ export const useApp = create<AppState>((set, get) => ({
      * all rather than asking for a thousand taps.
      */
     const rows = score.staves.reduce((n, s) => Math.max(n, s.positionInSystem + 1), 1);
-    const perStaff = Math.max(1, Math.ceil(parts.length / rows));
+    /**
+     * How many voices to look for on each staff, and which part each staff's
+     * voices start at.
+     *
+     * Spread as evenly as the staves allow, and where it cannot be even the
+     * extra voices go to the upper staves — which is where they are, a treble
+     * staff carrying soprano and alto over one voice per staff below. Four
+     * parts on three staves is 2·1·1, not 2·2·(and the last two collapsed into
+     * one), which is what a plain "round up" gave and it lost a whole part.
+     */
+    const voices = Array.from({ length: rows }, (_, row) =>
+      Math.floor(parts.length / rows) + (row < parts.length % rows ? 1 : 0),
+    );
+    const firstPart = voices.map((_, row) => voices.slice(0, row).reduce((a, b) => a + b, 0));
 
     const onStaff = new Map<string, DetectedNote[]>();
     for (const n of score.notes) {
@@ -579,8 +592,39 @@ export const useApp = create<AppState>((set, get) => ({
     }
 
     const partOf: Record<string, string> = {};
-    for (const staff of score.staves) {
+    /**
+     * Where each part has been sitting lately, in staff steps.
+     *
+     * Position in the chord says which voice a note is only while every voice
+     * is singing. The moment one of them rests — and on a real chart that is
+     * half the page — a lone notehead is left in the middle of the stave with
+     * nothing above or below it to be higher or lower than, and taking it as
+     * the top voice by default files whole phrases under the wrong name. What
+     * it is really nearest to is wherever that voice has just been, so that is
+     * what decides it. Steps rather than pixels, so the memory carries from one
+     * system to the next and from one page to the next.
+     */
+    const lately = new Map<number, number>();
+    const remember = (index: number, step: number) => {
+      const was = lately.get(index);
+      lately.set(index, was == null ? step : was * 0.6 + step * 0.4);
+    };
+
+    const inOrder = score.staves
+      .slice()
+      .sort(
+        (a, b) => a.page - b.page || a.system - b.system || a.positionInSystem - b.positionInSystem,
+      );
+
+    for (const staff of inOrder) {
       const notes = (onStaff.get(staff.id) ?? []).slice().sort((a, b) => a.x - b.x);
+      const row = Math.min(rows - 1, staff.positionInSystem);
+      // A staff with no voices left to give it — more staves than parts — puts
+      // everything in the last part rather than nowhere.
+      const perStaff = Math.max(1, voices[row]);
+      const base = firstPart[row];
+      const slotPart = (slot: number) => Math.min(parts.length - 1, base + slot);
+
       // Noteheads stacked at one moment are one chord, and its voices run top
       // to bottom — the same grouping a glide uses to sound a line rather than
       // a wash.
@@ -588,10 +632,36 @@ export const useApp = create<AppState>((set, get) => ({
       const settle = () => {
         if (!column.length) return;
         const stacked = column.slice().sort((a, b) => a.y - b.y);
+
+        // Fewer notes than voices: slide the run of them up and down the
+        // voices and keep the placing that sits closest to where those voices
+        // have been. With nothing remembered yet this comes out top-first,
+        // which is the old rule and the right one to start from.
+        let offset = 0;
+        if (stacked.length < perStaff) {
+          let bestCost = Infinity;
+          for (let o = 0; o <= perStaff - stacked.length; o++) {
+            let cost = 0;
+            let known = 0;
+            stacked.forEach((n, i) => {
+              const seen = lately.get(slotPart(o + i));
+              if (seen == null) return;
+              cost += Math.abs(n.step - seen);
+              known++;
+            });
+            if (!known) continue;
+            const mean = cost / known;
+            if (mean < bestCost) {
+              bestCost = mean;
+              offset = o;
+            }
+          }
+        }
+
         stacked.forEach((n, i) => {
-          const slot = Math.min(i, perStaff - 1);
-          const index = Math.min(parts.length - 1, staff.positionInSystem * perStaff + slot);
+          const index = slotPart(Math.min(offset + i, perStaff - 1));
           partOf[n.id] = parts[index].id;
+          remember(index, n.step);
         });
         column = [];
       };

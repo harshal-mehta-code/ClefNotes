@@ -98,6 +98,18 @@ staves enough, otherwise the voices of each staff split top to bottom, which is
 how a hymn or a barbershop chart is printed — and it can be undone in one tap.
 It is a starting point, not a reading; a wrong note is one tap to move.
 
+Where it has to guess, it guesses from where the voices have just been. Position
+in the chord says which voice a note is only while every voice is singing, and
+the moment one of them rests, a lone notehead is left in the middle of the stave
+with nothing to be above or below. Taking it as the top voice by default files
+whole phrases under the wrong name — a bari melody, a soprano descant, anything
+written *solo* for a line — so a lone note goes to whichever part has been
+nearest it lately, in staff steps, remembered across systems and pages. On the
+seven-page chart this was measured against, that pulls the four parts from
+333/215/303/223 notes to 276/272/280/246, and takes the leaps within a single
+voice — an octave or more between one of its notes and the next, which is what a
+misfiled note looks like from inside the line — from four to none.
+
 **The sheet.** Your page, page by page, with a transparent layer over it that
 knows where the staves and noteheads are. Detected notes carry a faint dot, so
 you can see what the app found — toggle it off when you want a clean page.
@@ -359,10 +371,13 @@ src/
 - A glide follows one staff — the one it started on — so it does not run on
   into the next system.
 - Parts are not read off the page and never will be; a score arrives untagged,
-  and `Auto` guesses from the layout rather than from the notation. On a page
-  where a voice crosses another, or rests out for a phrase and the remaining
-  voice is engraved in the middle of the stave, it will guess wrong there and
-  the fix is to tap those notes.
+  and `Auto` guesses from the layout rather than from the notation. Where two
+  voices genuinely cross, or one comes back in a long way from where it left,
+  it will guess wrong and the fix is to tap or re-trace those notes.
+- A score whose systems have different numbers of staves — a solo verse before
+  the parts come in — is read against the widest system it has, so the solo is
+  taken for the top part. Often that is right; where it is not, it is one
+  stroke to re-trace.
 - A note belongs to one part. Two voices printed as a single shared notehead —
   a unison written once — can only be given to one of them.
 - There are four parts. A double choir or a full score has more, and would need
