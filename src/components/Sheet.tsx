@@ -7,6 +7,9 @@ import {
   noteAlter,
   noteName,
   notePrinted,
+  partInk,
+  partShort,
+  scoreParts,
   staffSharps,
   stepAt,
   stepToMidi,
@@ -29,7 +32,71 @@ interface Aim {
   /** Staff spacing, so the marker is drawn to the size of the music. */
   radius: number;
   label: string;
+  /**
+   * A notehead that is right here but belongs to another part, while a part is
+   * soloed. It is drawn and named anyway: a tap that does nothing is alarming,
+   * and a tap that says "that one is the Alto" is an answer.
+   */
+  muted?: { name: string; ink: string };
 }
+
+/**
+ * The veil that puts the rest of the score behind glass.
+ *
+ * Fading the other parts cannot be done by drawing over their noteheads,
+ * because the page is a photograph of printed ink and the other parts are
+ * *inside* it — along with their stems, their words and their beams. So the
+ * whole page is washed out and the current part's notes are punched back
+ * through it at full contrast. The staff lines stay faintly visible, because a
+ * line of music with no staff under it is not readable, only isolated.
+ *
+ * Held apart and memoised for the same reason the dots are: the aiming marker
+ * follows the pointer, and this must not be rebuilt on every move.
+ */
+const Veil = memo(function Veil({
+  id,
+  width,
+  height,
+  notes,
+  staves,
+}: {
+  id: string;
+  width: number;
+  height: number;
+  notes: DetectedNote[];
+  staves: DetectedStaff[];
+}) {
+  const spacing = new Map(staves.map((s) => [s.id, s.spacing]));
+  return (
+    <>
+      <defs>
+        <mask id={id} maskUnits="userSpaceOnUse" x={0} y={0} width={width} height={height}>
+          <rect x={0} y={0} width={width} height={height} fill="#fff" />
+          {notes.map((n) => {
+            const sp = spacing.get(n.staff) ?? 0;
+            if (!sp) return null;
+            return (
+              <ellipse key={n.id} cx={n.x} cy={n.y} rx={sp * 1.5} ry={sp * 1.25} fill="#000" />
+            );
+          })}
+        </mask>
+      </defs>
+      {/* White, not paper: what is being covered is the printed page, and it is
+          white in both themes because it is a picture of paper. */}
+      <rect
+        data-veil=""
+        className="pointer-events-none"
+        x={0}
+        y={0}
+        width={width}
+        height={height}
+        fill="#fff"
+        opacity={0.62}
+        mask={`url(#${id})`}
+      />
+    </>
+  );
+});
 
 /**
  * The dots over the noteheads.
@@ -42,19 +109,36 @@ const Dots = memo(function Dots({
   staves,
   score,
   selected,
+  /** The part being worked on, if any, and whether taps are tagging into it. */
+  currentPart,
+  tagging,
 }: {
   notes: DetectedNote[];
   staves: DetectedStaff[];
   score: PageScore;
   selected: string | null;
+  currentPart: string | null;
+  tagging: boolean;
 }) {
+  const parts = scoreParts(score);
+  const partOf = score.partOf ?? {};
+  const soloing = currentPart != null && !tagging;
   return (
     <>
       {notes.map((n) => {
         const staff = staves.find((s) => s.id === n.staff);
         if (!staff) return null;
+        const part = partOf[n.id] ?? null;
+        // Soloing already dims the rest of the page. A coloured dot on top of
+        // something being deliberately hidden is an argument with itself.
+        if (soloing && part !== currentPart) return null;
         const on = selected === n.id;
         const edited = (score.nudges[n.id] ?? 0) !== 0 || n.id in (score.alters ?? {});
+        const index = part ? parts.findIndex((p) => p.id === part) : -1;
+        const ink = index >= 0 ? partInk(index) : null;
+        // While tagging, the other parts step back so the untagged notes — the
+        // ones there is still work to do on — are the ones that stand out.
+        const aside = tagging && currentPart != null && part != null && part !== currentPart;
         /**
          * A reading the detector only just believed. Drawn as an outline rather
          * than a solid, so that a guess and a certainty are not shown in the
@@ -73,22 +157,44 @@ const Dots = memo(function Dots({
             key={n.id}
             cx={n.x}
             cy={n.y}
-            rx={staff.spacing * 0.78}
-            ry={staff.spacing * 0.6}
+            /* A part's dot is drawn wider than the notehead it marks, because
+               the head itself is black and stays black: what carries the colour
+               is the ring of paper around it, and a ring the same size as the
+               head is no ring at all. */
+            rx={staff.spacing * (ink && !on ? 1.02 : 0.78)}
+            ry={staff.spacing * (ink && !on ? 0.8 : 0.6)}
             fill={
               unsure
                 ? 'none'
                 : on
                   ? 'rgb(var(--pink))'
-                  : edited
-                    ? 'rgb(var(--gold))'
-                    : 'rgb(var(--blue))'
+                  : (ink ?? (edited ? 'rgb(var(--gold))' : 'rgb(var(--blue))'))
             }
-            stroke={unsure ? 'rgb(var(--blue))' : 'none'}
-            strokeWidth={unsure ? 2 : 0}
+            /* A note in a part already wears a colour, so a correction cannot
+               also be a colour — it becomes a ring around the same dot, and the
+               two things stay legible at once. */
+            stroke={
+              unsure
+                ? (ink ?? 'rgb(var(--blue))')
+                : ink && edited
+                  ? 'rgb(var(--gold))'
+                  : 'none'
+            }
+            strokeWidth={unsure || (ink && edited) ? 2 : 0}
             strokeDasharray={unsure ? '4 3' : undefined}
             vectorEffect="non-scaling-stroke"
-            opacity={on ? 0.5 : edited ? 0.36 : unsure ? 0.5 : 0.16}
+            opacity={on ? 0.5 : aside ? 0.12 : ink ? 0.62 : edited ? 0.36 : unsure ? 0.5 : 0.16}
+            /**
+             * Overprinted, like the ink this design is named after.
+             *
+             * A wash laid over a notehead in the ordinary way is invisible —
+             * the head is black, and black tinted 30% is black — so a page of
+             * tagged notes came out looking exactly like a page of untagged
+             * ones. Multiplied, the colour lands on the paper around the head
+             * and the printed head stays as black as it was printed. The part
+             * reads across the room, and nothing of the page is covered up.
+             */
+            style={ink && !on ? { mixBlendMode: 'multiply' } : undefined}
           />
         );
       })}
@@ -123,6 +229,11 @@ export default function Sheet() {
   const nudgeSelected = useApp((s) => s.nudgeSelected);
   const addNoteAt = useApp((s) => s.addNoteAt);
   const removeNote = useApp((s) => s.removeNote);
+  const currentPart = useApp((s) => s.currentPart);
+  const tagging = useApp((s) => s.tagging);
+  const setCurrentPart = useApp((s) => s.setCurrentPart);
+  const setTagging = useApp((s) => s.setTagging);
+  const assignPart = useApp((s) => s.assignPart);
 
   const setVisiblePage = useApp((s) => s.setVisiblePage);
   const pageRefs = useRef<Array<HTMLDivElement | null>>([]);
@@ -207,6 +318,40 @@ export default function Sheet() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      // 1–4 pick a part, 0 goes back to the whole score, T tags into it. The
+      // parts bar says the same thing in words; this is for the hand that is
+      // already going to tap a hundred notes.
+      const state = useApp.getState();
+      if (!state.score) return;
+      if (/^[1-9]$/.test(e.key)) {
+        const part = scoreParts(state.score)[Number(e.key) - 1];
+        if (!part) return;
+        e.preventDefault();
+        setCurrentPart(state.currentPart === part.id ? null : part.id);
+        return;
+      }
+      if (e.key === '0' && state.currentPart) {
+        e.preventDefault();
+        setCurrentPart(null);
+        return;
+      }
+      if (e.key === 't' || e.key === 'T') {
+        e.preventDefault();
+        setTagging(!state.tagging);
+        return;
+      }
+      // Escape backs out one step at a time — out of tagging, then out of the
+      // part, then out of the selection — rather than everything at once.
+      if (e.key === 'Escape' && state.tagging) {
+        setTagging(false);
+        return;
+      }
+      if (e.key === 'Escape' && state.currentPart) {
+        setCurrentPart(null);
+        return;
+      }
       if (!useApp.getState().selected) return;
       if (e.key === 'ArrowUp') {
         e.preventDefault();
@@ -221,7 +366,7 @@ export default function Sheet() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [nudgeSelected, select]);
+  }, [nudgeSelected, select, setCurrentPart, setTagging]);
 
   // Once a hold has taken the gesture over, the page must not scroll out from
   // under the finger. touch-action is decided when a gesture starts, so the only
@@ -292,6 +437,22 @@ export default function Sheet() {
   const fit = Math.max(240, Math.min((avail || 960) - 24, 1126) - GUTTER);
   const pageWidth = Math.round(fit * zoom);
 
+  /**
+   * A part chosen, and taps playing rather than tagging: the score is soloed
+   * down to that line. Tagging deliberately un-solos, because you cannot put a
+   * note into a part you have hidden.
+   */
+  const solo = tagging ? null : currentPart;
+  const parts = scoreParts(score);
+  const partOf = score.partOf ?? {};
+  /** Whether a note answers to a tap or a glide right now. */
+  const live = (n: DetectedNote) => !solo || partOf[n.id] === solo;
+  const partNameOf = (id: string): { name: string; ink: string } | undefined => {
+    const p = partOf[id];
+    const i = p ? parts.findIndex((x) => x.id === p) : -1;
+    return i >= 0 ? { name: parts[i].name, ink: partInk(i) } : undefined;
+  };
+
   /** Which staff a point falls on — the nearest one within reach. */
   const staffAt = (page: number, y: number): DetectedStaff | null => {
     const staves = stavesByPage.get(page) ?? [];
@@ -336,16 +497,41 @@ export default function Sheet() {
 
     let best: DetectedNote | null = null;
     let bestScore = Infinity;
+    /** The nearest note that a soloed part is currently keeping quiet. */
+    let hushed: DetectedNote | null = null;
+    let hushedScore = Infinity;
     for (const n of notesByPage.get(page) ?? []) {
       if (n.staff !== staff.id) continue;
       const dy = Math.abs(n.y - imgY);
       const dx = Math.abs(n.x - imgX);
       if (dy > sp * 1.8 || dx > sp * 3.2) continue;
       const score = dy * 3 + dx;
-      if (score < bestScore) {
-        bestScore = score;
-        best = n;
+      if (live(n)) {
+        if (score < bestScore) {
+          bestScore = score;
+          best = n;
+        }
+      } else if (score < hushedScore) {
+        hushedScore = score;
+        hushed = n;
       }
+    }
+
+    // A note of another part, under the finger, while one part is soloed. It is
+    // named and coloured for the part it is in rather than passed over in
+    // silence: "nothing happened" is a bug report, "that one is the Alto" is an
+    // answer, and they look identical from the outside.
+    if (!best && hushed) {
+      return {
+        page,
+        staff: staff.id,
+        note: null,
+        x: hushed.x,
+        y: hushed.y,
+        radius: sp,
+        label: noteName(hushed, staff, score),
+        muted: partNameOf(hushed.id),
+      };
     }
 
     if (best) {
@@ -418,7 +604,18 @@ export default function Sheet() {
     showAim(target);
     holdAim();
     if (!target.note) return; // shown, not sounded: the marker says why
-    land(target, score.notes.find((n) => n.id === target.note) ?? null, staff);
+    const note = score.notes.find((n) => n.id === target.note) ?? null;
+    /**
+     * Tagging: the tap puts this note in the part, and plays it — you have to
+     * hear what you just claimed, or a mis-tap is invisible until you play the
+     * line back. Tapping a note already in the part takes it out again, which
+     * is the same "tap the lit one to take it back" the accidental buttons use,
+     * and on a phone it is the only undo there is.
+     */
+    if (note && tagging && currentPart) {
+      assignPart([note.id], partOf[note.id] === currentPart ? null : currentPart);
+    }
+    land(target, note, staff);
   };
 
   /** A press held still: the pitch at that exact line or space, whatever is there. */
@@ -476,7 +673,7 @@ export default function Sheet() {
     const hi = Math.max(g.x, imgX);
     g.x = imgX;
     const crossed = (notesByPage.get(page) ?? [])
-      .filter((n) => n.staff === staff.id && n.x > lo && n.x <= hi)
+      .filter((n) => n.staff === staff.id && n.x > lo && n.x <= hi && live(n))
       .sort((a, b) => a.x - b.x);
     if (!crossed.length) return;
 
@@ -489,6 +686,20 @@ export default function Sheet() {
         continue;
       }
       line.push(n);
+    }
+    /**
+     * Dragging is already how a phrase is played, so dragging is how a phrase
+     * is tagged — and the same rule decides which note it means. Trace the line
+     * you are singing and it goes into your part, note by note, at the speed of
+     * your hand. That is what turns a thousand taps into a dozen strokes.
+     *
+     * A drag only ever puts notes *in*. Toggling a note off is a deliberate tap
+     * on one note, or a stroke with a different part chosen — a drag that took
+     * notes back out wherever it re-crossed them would be unusable.
+     */
+    if (tagging && currentPart) {
+      const add = line.filter((n) => partOf[n.id] !== currentPart).map((n) => n.id);
+      if (add.length) assignPart(add, currentPart);
     }
     for (const n of line) soundNote(n);
 
@@ -523,6 +734,7 @@ export default function Sheet() {
   // rather than leaving the old answer sitting there.
   const heardLabel =
     heardNote && heardStaff ? noteName(heardNote, heardStaff, score) : (heard?.label ?? '');
+  const heardPartIndex = heardNote ? parts.findIndex((p) => p.id === partOf[heardNote.id]) : -1;
 
   return (
     <div ref={viewport} className="w-full">
@@ -566,7 +778,16 @@ export default function Sheet() {
                     const iy = ((e.clientY - r.top) / r.height) * page.height;
 
                     if (e.pointerType === 'mouse') {
-                      (e.target as Element).setPointerCapture?.(e.pointerId);
+                      // Capture is a nicety — it keeps a drag alive off the
+                      // edge of the page. It also throws if the pointer has
+                      // already gone, and an exception here would take the rest
+                      // of this handler with it: the note would not sound and
+                      // the drag would never start.
+                      try {
+                        (e.target as Element).setPointerCapture?.(e.pointerId);
+                      } catch {
+                        /* no capture, and nothing lost that matters */
+                      }
                       dragging.current = true;
                       // Alt is the desktop way to ask for a pitch where no note
                       // was found; a plain press plays the note and starts a glide.
@@ -644,8 +865,11 @@ export default function Sheet() {
                     }
                     // Held still and let go: the pitch at that spot, note or no
                     // note. Held and slid: the phrase has already played.
-                    if (p.held && !p.glided) freeAt(page.index, ix, iy);
-                    else if (!p.held) tapAt(page.index, ix, iy);
+                    // While tagging there is nothing to put a bare staff line
+                    // into, so a hold that goes nowhere does nothing.
+                    if (p.held && !p.glided) {
+                      if (!tagging) freeAt(page.index, ix, iy);
+                    } else if (!p.held) tapAt(page.index, ix, iy);
                     endGlide();
                   }}
                   /* The browser fires this the moment it decides the gesture is
@@ -680,8 +904,30 @@ export default function Sheet() {
                     />
                   ))}
 
-                  {showNotes && (
-                    <Dots notes={notes} staves={staves} score={score} selected={selected} />
+                  {/* Everything but this part, put behind glass. */}
+                  {solo && (
+                    <Veil
+                      id={`veil-${page.index}`}
+                      width={page.width}
+                      height={page.height}
+                      notes={notes.filter((n) => partOf[n.id] === solo)}
+                      staves={staves}
+                    />
+                  )}
+
+                  {/* The dots are what carries the part colours, so choosing a
+                      part brings them back even if they were switched off —
+                      hiding them and then colouring them would be two settings
+                      quietly disagreeing. */}
+                  {(showNotes || currentPart) && (
+                    <Dots
+                      notes={notes}
+                      staves={staves}
+                      score={score}
+                      selected={selected}
+                      currentPart={currentPart}
+                      tagging={tagging}
+                    />
                   )}
 
                   {/* Where the glide has reached. The speed of the hand is the
@@ -710,15 +956,24 @@ export default function Sheet() {
                       drawn a fifth of a pixel wide marks nothing. */}
                   {aim && aim.page === page.index && (
                     <g
-                      data-aim={aim.note ? 'note' : 'staff'}
+                      data-aim={aim.note ? 'note' : aim.muted ? 'muted' : 'staff'}
                       className="pointer-events-none"
-                      stroke="rgb(var(--pink))"
+                      stroke={aim.muted ? aim.muted.ink : 'rgb(var(--pink))'}
                       fill="none"
                       strokeWidth={2.4}
                       strokeLinecap="round"
                       vectorEffect="non-scaling-stroke"
                     >
-                      {aim.note ? (
+                      {aim.muted ? (
+                        <ellipse
+                          cx={aim.x}
+                          cy={aim.y}
+                          rx={aim.radius * 1.05}
+                          ry={aim.radius * 0.82}
+                          strokeDasharray="5 4"
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ) : aim.note ? (
                         <ellipse
                           cx={aim.x}
                           cy={aim.y}
@@ -755,16 +1010,23 @@ export default function Sheet() {
                     style={{
                       left: `${(aim.x / page.width) * 100}%`,
                       top: `${((aim.y - aim.radius * 1.3) / page.height) * 100}%`,
-                      background: 'rgb(var(--pink))',
+                      background: aim.muted ? aim.muted.ink : 'rgb(var(--pink))',
                       color: '#fff',
                     }}
                   >
                     {aim.label}
+                    {/* This note is another part's, and a soloed part is playing
+                        alone on purpose. Saying whose it is turns silence into
+                        an answer — and naming the part is also how you know
+                        which chip to tap to go and hear it. */}
+                    {aim.muted && (
+                      <span className="ml-1 font-normal opacity-80">· {aim.muted.name}</span>
+                    )}
                     {/* Nothing was found here, so a tap will not sound it. The
                         way to hear it anyway is the one gesture a scroll can
                         never be mistaken for, and saying so at the moment of
                         confusion is the only place anyone would read it. */}
-                    {!aim.note && (
+                    {!aim.note && !aim.muted && (
                       <span className="ml-1 font-normal opacity-80">
                         <span className="[@media(pointer:coarse)]:hidden">· alt</span>
                         <span className="hidden [@media(pointer:coarse)]:inline">· hold</span>
@@ -874,34 +1136,79 @@ export default function Sheet() {
           you can read off the page, rather than asking you to work out which
           way the pitch should move. */}
       {heard && (
-        <div className="sticky bottom-2 z-20 mx-auto flex w-fit max-w-[calc(100%-24px)] items-center gap-2 border-[1.5px] border-ink bg-panel px-3 py-2 shadow-stamp">
+        <div className="sticky bottom-2 z-20 mx-auto flex w-fit max-w-[calc(100%-24px)] flex-wrap items-center justify-center gap-2 border-[1.5px] border-ink bg-panel px-3 py-2 shadow-stamp">
           <span className="lbl hidden sm:inline">Heard</span>
           <span className="font-display text-[17px] font-bold leading-none">{heardLabel}</span>
           {heardNote ? (
             <>
-              <span className="lbl ml-1">Printed</span>
-              <div className="flex gap-1">
-                {(
-                  [
-                    [-1, '♭'],
-                    [0, '♮'],
-                    [1, '♯'],
-                  ] as Array<[Alter, string]>
-                ).map(([value, mark]) => (
-                  <button
-                    key={mark}
-                    className={`btn px-2.5 ${heardPrinted === value ? 'btn-on' : ''}`}
-                    title={
-                      heardPrinted === value
-                        ? 'Tap again if nothing is printed on this note'
-                        : `There is a ${mark} printed beside this note on the page`
-                    }
-                    onClick={() => setAlter(heardNote.id, heardPrinted === value ? null : value)}
-                  >
-                    {mark}
-                  </button>
-                ))}
-              </div>
+              {/* While tagging, the panel is about which line this note is on,
+                  not about what is printed beside it. Two rows of buttons for
+                  two different questions would leave both harder to find, and
+                  only one of them is being asked. */}
+              {tagging ? (
+                <>
+                  <span className="lbl ml-1">Part</span>
+                  <div className="flex gap-1">
+                    {parts.map((p, i) => {
+                      const on = partOf[heardNote.id] === p.id;
+                      return (
+                        <button
+                          key={p.id}
+                          className="btn px-2.5"
+                          style={
+                            on
+                              ? { background: partInk(i), borderColor: partInk(i), color: '#fff' }
+                              : { borderColor: partInk(i) }
+                          }
+                          aria-pressed={on}
+                          title={on ? `Take it out of ${p.name}` : `Put this note in ${p.name}`}
+                          onClick={() => assignPart([heardNote.id], on ? null : p.id)}
+                        >
+                          {partShort(p.name)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span className="lbl ml-1">Printed</span>
+                  <div className="flex gap-1">
+                    {(
+                      [
+                        [-1, '♭'],
+                        [0, '♮'],
+                        [1, '♯'],
+                      ] as Array<[Alter, string]>
+                    ).map(([value, mark]) => (
+                      <button
+                        key={mark}
+                        className={`btn px-2.5 ${heardPrinted === value ? 'btn-on' : ''}`}
+                        title={
+                          heardPrinted === value
+                            ? 'Tap again if nothing is printed on this note'
+                            : `There is a ${mark} printed beside this note on the page`
+                        }
+                        onClick={() => setAlter(heardNote.id, heardPrinted === value ? null : value)}
+                      >
+                        {mark}
+                      </button>
+                    ))}
+                  </div>
+                  {heardPartIndex >= 0 && (
+                    <span
+                      className="lbl flex items-center gap-1 whitespace-nowrap"
+                      title={`This note is in ${parts[heardPartIndex].name}`}
+                    >
+                      <span
+                        className="inline-block h-[9px] w-[9px] rounded-full"
+                        style={{ background: partInk(heardPartIndex) }}
+                      />
+                      {parts[heardPartIndex].name}
+                    </span>
+                  )}
+                </>
+              )}
               {/* A note the reader imagined. Taking it away is the other half
                   of being able to add one, and without it a phantom stays in
                   every glide over that bar for as long as the score exists. */}

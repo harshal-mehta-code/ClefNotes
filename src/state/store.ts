@@ -4,7 +4,9 @@ import { player } from '../lib/audio/player';
 import { INSTRUMENTS, type InstrumentId } from '../lib/audio/instruments';
 import { importScore } from '../lib/detect/import';
 import {
+  DEFAULT_PARTS,
   noteMidi,
+  scoreParts,
   stepAt,
   type Alter,
   type ClefId,
@@ -47,6 +49,17 @@ interface AppState {
   ringing: number[];
   /** Page currently in view — the piano roll follows it. */
   visiblePage: number;
+
+  /**
+   * The part being worked on. With one chosen, the page belongs to it: its
+   * notes stay lit while the rest of the score falls back, and a tap or a glide
+   * plays that line and nothing else. Null is the whole score, as before.
+   * Session state, not saved — which part you are on is where you are looking,
+   * not something about the score.
+   */
+  currentPart: string | null;
+  /** Whether a tap puts the note it lands on into the current part. */
+  tagging: boolean;
 
   setView: (v: ViewId) => void;
   setTheme: (t: 'light' | 'dark' | 'system') => void;
@@ -100,13 +113,72 @@ interface AppState {
    */
   setAlter: (noteId: string, alter: Alter) => void;
 
+  /** Choose the part to look at, tag into and play. Null is the whole score. */
+  setCurrentPart: (partId: string | null) => void;
+  /** Turn tagging on or off. Turning it on with no part chosen chooses the first. */
+  setTagging: (on: boolean) => void;
+  /** Put notes in a part, or with `null`, take them out of the one they are in. */
+  assignPart: (noteIds: string[], partId: string | null) => void;
+  renamePart: (partId: string, name: string) => void;
+  /** Take every note out of one part, and say how many that was. */
+  clearPart: (partId: string) => number;
+  /**
+   * A first pass at the whole score, from the way it is laid out on the page:
+   * one part per staff where there are staves enough, otherwise the voices of
+   * each staff split top to bottom. It is a starting point to correct, not a
+   * reading — which is why it says how many notes it moved and can be undone.
+   */
+  autoAssignParts: () => number;
+  /** Put every assignment back as it was — how auto-assign is undone. */
+  restorePartOf: (partOf: Record<string, string>) => void;
+
   sound: (midi: number) => void;
   soundNote: (note: DetectedNote) => void;
 }
 
+/**
+ * Saving, but not on every frame.
+ *
+ * A score record carries its page images, so writing one is megabytes. That is
+ * nothing once a note, and far too much once a pointer move — and dragging a
+ * part along a line does exactly that. So the fast-moving edits coalesce, and
+ * anything that could lose them (closing the score, leaving the tab) flushes
+ * first.
+ */
+let pending: PageScore | null = null;
+let pendingTimer: number | undefined;
+
 const persist = (score: PageScore | null) => {
+  // Whatever was queued is older than this, by definition — every write carries
+  // the whole score. Letting a queued one fire afterwards would put the older
+  // copy back, and a change made just before this one would silently return.
+  pending = null;
+  window.clearTimeout(pendingTimer);
   if (score) void db.scores.put(score);
 };
+
+const persistSoon = (score: PageScore | null) => {
+  if (!score) return;
+  pending = score;
+  window.clearTimeout(pendingTimer);
+  pendingTimer = window.setTimeout(flushPersist, 500);
+};
+
+const flushPersist = () => {
+  window.clearTimeout(pendingTimer);
+  const score = pending;
+  pending = null;
+  if (score) persist(score);
+};
+
+if (typeof window !== 'undefined') {
+  // A phone backgrounds a tab by freezing it, and pagehide may be the last
+  // thing that runs. Whatever is still only in memory goes down with it.
+  window.addEventListener('pagehide', flushPersist);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPersist();
+  });
+}
 
 /** Whether a stored row is a score this version of the app can actually open. */
 const readable = (s: PageScore | undefined): s is PageScore =>
@@ -122,6 +194,8 @@ const hydrate = (s: PageScore): PageScore => ({
   ...s,
   nudges: s.nudges ?? {},
   alters: s.alters ?? {},
+  parts: s.parts?.length ? s.parts : DEFAULT_PARTS.map((p) => ({ ...p })),
+  partOf: s.partOf ?? {},
   staves: (s.staves ?? []).map((st) => ({ ...st, bars: st.bars ?? [] })),
 });
 
@@ -143,6 +217,9 @@ export const useApp = create<AppState>((set, get) => ({
   selected: null,
   ringing: [],
   visiblePage: 0,
+
+  currentPart: null,
+  tagging: false,
 
   setView: (view) => set({ view }),
   setTheme: (theme) => {
@@ -187,6 +264,8 @@ export const useApp = create<AppState>((set, get) => ({
         loading: false,
         progress: null,
         selected: null,
+        currentPart: null,
+        tagging: false,
       });
       await get().refreshLibrary();
     } catch (e) {
@@ -210,13 +289,23 @@ export const useApp = create<AppState>((set, get) => ({
     }
     const opened = { ...hydrate(score), openedAt: Date.now() };
     await db.scores.put(opened);
-    set({ score: opened, view: 'sheet', selected: null, error: null });
+    set({
+      score: opened,
+      view: 'sheet',
+      selected: null,
+      error: null,
+      currentPart: null,
+      tagging: false,
+    });
     await get().refreshLibrary();
   },
 
   deleteScore: async (id) => {
+    // Anything still waiting to be written is written first, so a delayed save
+    // cannot land after the delete and resurrect the score.
+    flushPersist();
     await db.scores.delete(id);
-    if (get().score?.id === id) set({ score: null, view: 'library' });
+    if (get().score?.id === id) set({ score: null, view: 'library', currentPart: null });
     await get().refreshLibrary();
   },
 
@@ -237,7 +326,10 @@ export const useApp = create<AppState>((set, get) => ({
     set({ library: usable });
   },
 
-  closeScore: () => set({ score: null, view: 'library', selected: null }),
+  closeScore: () => {
+    flushPersist();
+    set({ score: null, view: 'library', selected: null, currentPart: null, tagging: false });
+  },
 
   setStaffClef: (staffId, clef, scope = 'all') => {
     const score = get().score;
@@ -354,9 +446,17 @@ export const useApp = create<AppState>((set, get) => ({
       confidence: 1,
       accidental: null,
     };
+    // Put in while tagging a part, it joins that part — you were pointing at a
+    // hole in that line, and having to go back and tap it again would be a
+    // second repair for one mistake.
+    const { currentPart, tagging } = get();
     const next = {
       ...score,
       notes: [...score.notes, note].sort((a, b) => a.x - b.x),
+      partOf:
+        tagging && currentPart
+          ? { ...(score.partOf ?? {}), [note.id]: currentPart }
+          : (score.partOf ?? {}),
     };
     set({ score: next, selected: note.id });
     persist(next);
@@ -374,13 +474,16 @@ export const useApp = create<AppState>((set, get) => ({
     if (!score) return;
     const nudges = { ...score.nudges };
     const alters = { ...score.alters };
+    const partOf = { ...(score.partOf ?? {}) };
     delete nudges[noteId];
     delete alters[noteId];
+    delete partOf[noteId];
     const next = {
       ...score,
       notes: score.notes.filter((n) => n.id !== noteId),
       nudges,
       alters,
+      partOf,
     };
     set({ score: next, selected: null });
     persist(next);
@@ -390,6 +493,125 @@ export const useApp = create<AppState>((set, get) => ({
     const score = get().score;
     if (!score) return;
     const next = { ...score, nudges: {} };
+    set({ score: next });
+    persist(next);
+  },
+
+  setCurrentPart: (currentPart) =>
+    set({ currentPart, tagging: currentPart == null ? false : get().tagging }),
+
+  setTagging: (on) => {
+    const score = get().score;
+    if (!on) return set({ tagging: false });
+    // Tagging with nowhere to put the note is a mode that cannot do anything,
+    // so asking for it chooses the first part rather than refusing.
+    const currentPart = get().currentPart ?? (score ? scoreParts(score)[0]?.id : null) ?? null;
+    set({ tagging: currentPart != null, currentPart });
+  },
+
+  assignPart: (noteIds, partId) => {
+    const score = get().score;
+    if (!score || !noteIds.length) return;
+    const partOf = { ...(score.partOf ?? {}) };
+    let changed = false;
+    for (const id of noteIds) {
+      if (partId == null) {
+        if (id in partOf) {
+          delete partOf[id];
+          changed = true;
+        }
+      } else if (partOf[id] !== partId) {
+        partOf[id] = partId;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    const next = { ...score, partOf };
+    set({ score: next });
+    persistSoon(next);
+  },
+
+  renamePart: (partId, name) => {
+    const score = get().score;
+    if (!score) return;
+    const next = {
+      ...score,
+      parts: scoreParts(score).map((p) => (p.id === partId ? { ...p, name } : p)),
+    };
+    set({ score: next });
+    persistSoon(next);
+  },
+
+  clearPart: (partId) => {
+    const score = get().score;
+    if (!score) return 0;
+    const partOf: Record<string, string> = {};
+    let cleared = 0;
+    for (const [id, p] of Object.entries(score.partOf ?? {})) {
+      if (p === partId) cleared++;
+      else partOf[id] = p;
+    }
+    if (!cleared) return 0;
+    const next = { ...score, partOf };
+    set({ score: next });
+    persist(next);
+    return cleared;
+  },
+
+  autoAssignParts: () => {
+    const score = get().score;
+    if (!score) return 0;
+    const parts = scoreParts(score);
+    /**
+     * How many staves a system has, which is how the layout says the parts are
+     * divided. Four staves and four parts is one part per staff; two staves and
+     * four parts is two voices on each, upper and lower — which is how a hymn
+     * or a barbershop chart is printed, and the reason this is worth doing at
+     * all rather than asking for a thousand taps.
+     */
+    const rows = score.staves.reduce((n, s) => Math.max(n, s.positionInSystem + 1), 1);
+    const perStaff = Math.max(1, Math.ceil(parts.length / rows));
+
+    const onStaff = new Map<string, DetectedNote[]>();
+    for (const n of score.notes) {
+      if (!onStaff.has(n.staff)) onStaff.set(n.staff, []);
+      onStaff.get(n.staff)!.push(n);
+    }
+
+    const partOf: Record<string, string> = {};
+    for (const staff of score.staves) {
+      const notes = (onStaff.get(staff.id) ?? []).slice().sort((a, b) => a.x - b.x);
+      // Noteheads stacked at one moment are one chord, and its voices run top
+      // to bottom — the same grouping a glide uses to sound a line rather than
+      // a wash.
+      let column: DetectedNote[] = [];
+      const settle = () => {
+        if (!column.length) return;
+        const stacked = column.slice().sort((a, b) => a.y - b.y);
+        stacked.forEach((n, i) => {
+          const slot = Math.min(i, perStaff - 1);
+          const index = Math.min(parts.length - 1, staff.positionInSystem * perStaff + slot);
+          partOf[n.id] = parts[index].id;
+        });
+        column = [];
+      };
+      for (const n of notes) {
+        if (column.length && Math.abs(n.x - column[0].x) >= staff.spacing * 0.8) settle();
+        column.push(n);
+      }
+      settle();
+    }
+
+    const next = { ...score, parts, partOf };
+    set({ score: next });
+    persist(next);
+    return Object.keys(partOf).length;
+  },
+
+  restorePartOf: (partOf) => {
+    const score = get().score;
+    if (!score) return;
+    const next = { ...score, partOf: { ...partOf } };
     set({ score: next });
     persist(next);
   },

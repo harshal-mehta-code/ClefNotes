@@ -157,6 +157,61 @@ export interface DetectedNote {
   accidental: Alter;
 }
 
+/**
+ * A voice in the score — the soprano line, the second trumpet, the left hand.
+ *
+ * Which notes belong to a part is something the page does not reliably say.
+ * Stems, beams and a brace are how an engraver writes it, and reading them is
+ * exactly the kind of inference that made an earlier version of this app sound
+ * like different music. So a part is not read: it is *told*, a note at a time
+ * or a phrase at a time, by the person looking at the page. That cannot be
+ * wrong, and it is the one thing a singer learning their line actually wants.
+ */
+export interface Part {
+  id: string;
+  name: string;
+}
+
+/**
+ * Four, because four is what a hymn, a chorale, a barbershop chart and a string
+ * quartet all have, and because names are easier to correct than to invent.
+ */
+export const DEFAULT_PARTS: Part[] = [
+  { id: 'p1', name: 'Soprano' },
+  { id: 'p2', name: 'Alto' },
+  { id: 'p3', name: 'Tenor' },
+  { id: 'p4', name: 'Bass' },
+];
+
+/**
+ * One spot colour per part — the design already says a multi-part score is
+ * layered ink. Pink is not among them: it means "this is what you just touched"
+ * everywhere else in the app, and a part that wore it would be permanently
+ * shouting.
+ */
+const PART_INKS = ['--blue', '--mint', '--violet', '--gold'];
+
+/** The CSS variable for a part's ink, by its position in the list. */
+export const partInkVar = (index: number): string =>
+  PART_INKS[((index % PART_INKS.length) + PART_INKS.length) % PART_INKS.length];
+
+export const partInk = (index: number): string => `rgb(var(${partInkVar(index)}))`;
+
+/** The parts of a score, defaulted for anything saved before parts existed. */
+export const scoreParts = (score: PageScore): Part[] =>
+  score.parts?.length ? score.parts : DEFAULT_PARTS;
+
+/** Where a part sits in the list, which is what decides its colour. -1 for none. */
+export const partIndexOf = (score: PageScore, partId: string | null | undefined): number =>
+  partId == null ? -1 : scoreParts(score).findIndex((p) => p.id === partId);
+
+/** The part a note has been put in, if any. */
+export const partOfNote = (score: PageScore, noteId: string): string | null =>
+  score.partOf?.[noteId] ?? null;
+
+/** A part's initial, for a chip too narrow to spell it out. */
+export const partShort = (name: string): string => (name.trim()[0] ?? '?').toUpperCase();
+
 export interface ScorePage {
   index: number;
   /** The rendered page, exactly as printed. This is what the user looks at. */
@@ -184,6 +239,14 @@ export interface PageScore {
    * "nobody has said", and the two cannot be collapsed.
    */
   alters: Record<string, Alter>;
+  /** The voices of this score, top to bottom, named by whoever is reading it. */
+  parts: Part[];
+  /**
+   * Which part each note has been put in, keyed by note id. A note missing from
+   * here belongs to no part yet, which is a real and common state — half a page
+   * tagged is still useful, and nothing pretends otherwise.
+   */
+  partOf: Record<string, string>;
 }
 
 /** The key in force on a staff: what was read there, or the score's default. */

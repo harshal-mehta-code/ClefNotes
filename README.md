@@ -78,6 +78,26 @@ upper line and a glide sounds like a line rather than a wash. A playhead follows
 the finger. Once a hold has taken the gesture over, the page stops scrolling
 under it, which is what makes this work on a phone at all.
 
+**Parts, told rather than read.** Which line a note belongs to is the one thing
+a page will not tell you reliably — it is written in stems and beams and a brace,
+and reading those is exactly the kind of inference that made an earlier version
+of this app sound like different music. So you say it. Pick a part, tap the
+notes, and they take its colour; or trace the line with a finger, which tags a
+phrase at the speed of your hand and plays it back as it goes.
+
+Then the payoff. **Choose a part and the page belongs to it**: the rest of the
+score goes behind a wash of white, the notes of your line stay black and crisp,
+and a tap or a glide plays only them — so tracing a stave that carries two
+voices hears one voice, whichever one your finger is nearest. Tapping a note
+that is not yours does not sound: it says whose it is. The piano roll follows,
+joining that part's notes into the line they actually make.
+
+Four parts, called Soprano, Alto, Tenor and Bass until you rename them.
+**Auto** does a first pass from the layout — one part per staff where there are
+staves enough, otherwise the voices of each staff split top to bottom, which is
+how a hymn or a barbershop chart is printed — and it can be undone in one tap.
+It is a starting point, not a reading; a wrong note is one tap to move.
+
 **The sheet.** Your page, page by page, with a transparent layer over it that
 knows where the staves and noteheads are. Detected notes carry a faint dot, so
 you can see what the app found — toggle it off when you want a clean page.
@@ -315,7 +335,7 @@ src/
               pdf.ts     page-at-a-time import
     audio/    player.ts       one-shot voices, no transport
               instruments.ts  synthesis presets
-  components/ Sheet · Contour · Keys · Library
+  components/ Sheet · Parts · Contour · Keys · Library
   state/      store.ts   Zustand + Dexie
 ```
 
@@ -338,6 +358,15 @@ src/
   read as a hollow notehead.
 - A glide follows one staff — the one it started on — so it does not run on
   into the next system.
+- Parts are not read off the page and never will be; a score arrives untagged,
+  and `Auto` guesses from the layout rather than from the notation. On a page
+  where a voice crosses another, or rests out for a phrase and the remaining
+  voice is engraved in the middle of the stave, it will guess wrong there and
+  the fix is to tap those notes.
+- A note belongs to one part. Two voices printed as a single shared notehead —
+  a unison written once — can only be given to one of them.
+- There are four parts. A double choir or a full score has more, and would need
+  more.
 - Grace notes, cue notes and small ossia staves are treated like anything else.
 - A tempo mark printed above the first staff can leave a note-shaped mark or
   two at the start of a piece.

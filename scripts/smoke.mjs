@@ -628,6 +628,196 @@ check(
   rule?.hasNext ? `${rule.beforeNext} → ${rule.afterNext}` : 'no note of that line in a later bar',
 );
 
+// Parts. Which line a note belongs to is not read off the page — it is told,
+// and the whole point of telling it is what happens next: the part plays alone
+// and the rest of the score gets out of the way.
+const sorted = await page.evaluate(() => {
+  const s = window.__cn.getState();
+  const n = s.autoAssignParts();
+  const sc = window.__cn.getState().score;
+  const tally = {};
+  for (const p of Object.values(sc.partOf)) tally[p] = (tally[p] ?? 0) + 1;
+  // The top voice of the top staff is the first part, whether that staff
+  // carries one voice or two.
+  const staff = sc.staves.find((x) => x.positionInSystem === 0);
+  const notes = sc.notes.filter((x) => x.staff === staff.id).sort((a, b) => a.x - b.x);
+  const column = notes
+    .filter((x) => Math.abs(x.x - notes[0].x) < staff.spacing * 0.8)
+    .sort((a, b) => a.y - b.y);
+  return {
+    n,
+    total: sc.notes.length,
+    used: Object.keys(tally).length,
+    top: sc.partOf[column[0]?.id],
+    first: sc.parts[0].id,
+  };
+});
+check(
+  'sorting by staff puts every note in a part',
+  sorted.n === sorted.total,
+  `${sorted.n} of ${sorted.total} notes across ${sorted.used} parts`,
+);
+check('and the top voice of the top staff is the first part', sorted.top === sorted.first);
+
+const soloed = await page.evaluate(async () => {
+  const s = window.__cn.getState();
+  const sc = s.score;
+  const mine = sc.notes.find((n) => sc.partOf[n.id] === sc.parts[0].id);
+  const theirs = sc.notes.find(
+    (n) => sc.partOf[n.id] && sc.partOf[n.id] !== sc.parts[0].id && n.page === mine.page,
+  );
+  s.setCurrentPart(sc.parts[0].id);
+  await new Promise((r) => setTimeout(r, 200));
+
+  const svg = document.querySelectorAll('main svg')[sc.pages.findIndex((p) => p.index === mine.page)];
+  svg.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 200));
+  const pg = sc.pages.find((p) => p.index === mine.page);
+  const r = svg.getBoundingClientRect();
+  // Counted at the store rather than read off `ringing`, which is capped and
+  // decays on a timer — a check that has to be told what silence sounds like
+  // must not be able to mistake a full list for one.
+  let played = 0;
+  const real = window.__cn.getState().sound;
+  window.__cn.setState({
+    sound: (m) => {
+      played++;
+      real(m);
+    },
+  });
+  const tap = async (n) => {
+    const before = played;
+    const at = {
+      clientX: r.left + (n.x / pg.width) * r.width,
+      clientY: r.top + (n.y / pg.height) * r.height,
+      pointerId: 1,
+      pointerType: 'mouse',
+      bubbles: true,
+    };
+    svg.dispatchEvent(new PointerEvent('pointerdown', at));
+    svg.dispatchEvent(new PointerEvent('pointerup', at));
+    await new Promise((x) => setTimeout(x, 150));
+    return played > before;
+  };
+  const own = await tap(mine);
+  const other = theirs ? await tap(theirs) : false;
+  window.__cn.setState({ sound: real });
+  return { own, other, hadOther: !!theirs };
+});
+check('a soloed part still sounds when tapped', soloed.own);
+check(
+  'and a note of another part stays silent',
+  !soloed.hadOther || !soloed.other,
+  soloed.hadOther ? '' : 'no other part on that page',
+);
+check('the rest of the page is veiled', (await page.locator('[data-veil]').count()) > 0);
+check('and the note it will not play is named for its part', (await page.locator('[data-aim="muted"]').count()) > 0);
+
+// The payoff: trace the line and hear only that line, whichever voice of the
+// staff the finger happens to be nearest.
+const alone = await page.evaluate(async () => {
+  const s = window.__cn.getState();
+  const sc = s.score;
+  const heard = [];
+  const real = s.soundNote;
+  window.__cn.setState({
+    soundNote: (n) => {
+      heard.push(sc.partOf[n.id] ?? null);
+      real(n);
+    },
+  });
+  await new Promise((r) => setTimeout(r, 120));
+
+  const busy = (x) => sc.notes.filter((n) => n.staff === x.id).length >= 6;
+  const staff =
+    sc.staves.find((x) => x.positionInSystem === 0 && busy(x)) ?? sc.staves.find(busy);
+  if (!staff) return { count: 0, parts: [], why: 'no staff with six notes' };
+  const pg = sc.pages.find((p) => p.index === staff.page);
+  const svg = document.querySelectorAll('main svg')[sc.pages.indexOf(pg)];
+  svg.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 200));
+  const r = svg.getBoundingClientRect();
+  const notes = sc.notes.filter((n) => n.staff === staff.id).sort((a, b) => a.x - b.x);
+  const y = r.top + (notes[0].y / pg.height) * r.height;
+  const send = (type, x) =>
+    svg.dispatchEvent(
+      new PointerEvent(type, {
+        clientX: r.left + (x / pg.width) * r.width,
+        clientY: y,
+        pointerId: 1,
+        pointerType: 'mouse',
+        bubbles: true,
+      }),
+    );
+  send('pointerdown', notes[0].x - staff.spacing);
+  for (let i = 1; i <= 20; i++) {
+    send('pointermove', notes[0].x - staff.spacing + (i / 20) * (staff.right - notes[0].x));
+  }
+  send('pointerup', staff.right);
+  await new Promise((x) => setTimeout(x, 150));
+  window.__cn.setState({ soundNote: real });
+  return { count: heard.length, parts: [...new Set(heard)] };
+});
+check(
+  'a glide plays the soloed part and nothing else',
+  alone.count > 2 && alone.parts.length === 1,
+  alone.why ?? `${alone.count} notes, ${alone.parts.length} part(s)`,
+);
+
+// Tagging, and the way back out of it: the same tap takes the note off again,
+// which on a phone is the only undo there is.
+const tags = await page.evaluate(async () => {
+  const s = window.__cn.getState();
+  s.setCurrentPart(s.score.parts[2].id);
+  s.setTagging(true);
+  await new Promise((r) => setTimeout(r, 150));
+
+  const sc = window.__cn.getState().score;
+  const n = sc.notes.find((x) => sc.partOf[x.id] === sc.parts[0].id);
+  const pg = sc.pages.find((p) => p.index === n.page);
+  const svg = document.querySelectorAll('main svg')[sc.pages.indexOf(pg)];
+  svg.scrollIntoView({ block: 'center' });
+  await new Promise((r) => setTimeout(r, 200));
+  const r = svg.getBoundingClientRect();
+  const at = {
+    clientX: r.left + (n.x / pg.width) * r.width,
+    clientY: r.top + (n.y / pg.height) * r.height,
+    pointerId: 1,
+    pointerType: 'mouse',
+    bubbles: true,
+  };
+  const tap = async () => {
+    svg.dispatchEvent(new PointerEvent('pointerdown', at));
+    svg.dispatchEvent(new PointerEvent('pointerup', at));
+    await new Promise((x) => setTimeout(x, 150));
+    return window.__cn.getState().score.partOf[n.id] ?? null;
+  };
+  const into = await tap();
+  const back = await tap();
+  s.setTagging(false);
+  return { into, back, third: sc.parts[2].id };
+});
+check('a tap while tagging moves the note into that part', tags.into === tags.third);
+check('and tapping it again takes it back out', tags.back === null);
+
+// Tagging a score you cannot save is a score you tag twice.
+const savedParts = await page.evaluate(async () => {
+  const s = window.__cn.getState();
+  const id = s.score.id;
+  const expected = Object.keys(s.score.partOf).length;
+  await new Promise((r) => setTimeout(r, 700));
+  s.closeScore();
+  await s.openScore(id);
+  const sc = window.__cn.getState().score;
+  return { expected, found: Object.keys(sc.partOf ?? {}).length, part: window.__cn.getState().currentPart };
+});
+check(
+  'parts are saved with the score',
+  savedParts.found === savedParts.expected && savedParts.expected > 0,
+  `${savedParts.found} of ${savedParts.expected} kept`,
+);
+check('and a score opens whole, not soloed', savedParts.part === null);
+
 // Zoom has to reach the page itself, or it does nothing on the screen where a
 // notehead is smallest and a fingertip is largest.
 const zoomed = await page.evaluate(async () => {

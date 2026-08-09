@@ -1,6 +1,7 @@
 import { findStaves, readPage, toBitmap } from './notes';
 import { renderPhoto } from './photo';
 import { readVectorHeads } from './vector';
+import { DEFAULT_PARTS } from './types';
 import type { DetectedNote, DetectedStaff, PageScore, ScorePage } from './types';
 
 /**
@@ -195,6 +196,8 @@ async function assemble(
     sharps: commonKey(staves),
     nudges: {},
     alters: {},
+    parts: DEFAULT_PARTS.map((p) => ({ ...p })),
+    partOf: {},
   };
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useApp } from '../state/store';
-import { noteMidi, type PageScore } from '../lib/detect/types';
+import { noteMidi, partInkVar, scoreParts, type PageScore } from '../lib/detect/types';
 
 /**
  * The piano roll.
@@ -26,6 +26,9 @@ export default function Contour({ height = 132 }: { height?: number }) {
   const visiblePage = useApp((s) => s.visiblePage);
   const select = useApp((s) => s.select);
   const soundNote = useApp((s) => s.soundNote);
+  const currentPart = useApp((s) => s.currentPart);
+  const tagging = useApp((s) => s.tagging);
+  const solo = tagging ? null : currentPart;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -52,6 +55,7 @@ export default function Contour({ height = 132 }: { height?: number }) {
       ctx.font = '8px ui-monospace, monospace';
 
       const placed = layout(score, w, visiblePage);
+      const tagged = Object.keys(score.partOf ?? {}).length > 0;
       if (!placed.length) {
         ctx.fillStyle = `rgb(${css('--ink-3')})`;
         ctx.fillText(`No notes found on page ${visiblePage + 1}`, 6, h / 2);
@@ -90,12 +94,43 @@ export default function Contour({ height = 132 }: { height?: number }) {
       }
       ctx.globalAlpha = 1;
 
+      const at = (p: (typeof placed)[number]) => h - ((p.midi - lo) / span) * h;
+
+      /**
+       * One part, joined up. Notes in a part are a line in the musical sense,
+       * and here they can be drawn as one — where it climbs, where it leaps,
+       * where it sits still. That is the shape a singer is trying to learn and
+       * the thing a page of dots is worst at showing.
+       */
+      if (solo) {
+        const mine = placed.filter((p) => p.part === solo);
+        if (mine.length > 1) {
+          ctx.strokeStyle = `rgb(${css(partInkVar(mine[0].partRow))})`;
+          ctx.lineWidth = 1.5;
+          ctx.globalAlpha = 0.55;
+          ctx.beginPath();
+          mine.forEach((p, i) => (i ? ctx.lineTo(p.x, at(p)) : ctx.moveTo(p.x, at(p))));
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        }
+      }
+
       for (const p of placed) {
-        const y = h - ((p.midi - lo) / span) * h;
+        const y = at(p);
         const on = p.id === selected;
-        ctx.fillStyle = on ? `rgb(${css('--pink')})` : `rgb(${css(inks[p.staffRow % inks.length])})`;
-        ctx.globalAlpha = on ? 1 : 0.75;
-        const r = on ? 3.6 : 2.4;
+        // Coloured by part once a score has parts, and by staff until then.
+        // Mixing the two schemes on one strip would make a half-tagged page
+        // read as five voices instead of four.
+        const ink =
+          p.partRow >= 0
+            ? partInkVar(p.partRow)
+            : tagged
+              ? '--ink-3'
+              : inks[p.staffRow % inks.length];
+        const aside = solo != null && p.part !== solo;
+        ctx.fillStyle = on ? `rgb(${css('--pink')})` : `rgb(${css(ink)})`;
+        ctx.globalAlpha = on ? 1 : aside ? 0.16 : 0.75;
+        const r = on ? 3.6 : aside ? 1.6 : 2.4;
         ctx.beginPath();
         ctx.ellipse(p.x, y, r * 1.3, r, 0, 0, Math.PI * 2);
         ctx.fill();
@@ -114,7 +149,7 @@ export default function Contour({ height = 132 }: { height?: number }) {
 
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [score, selected, visiblePage]);
+  }, [score, selected, visiblePage, solo]);
 
   const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!score) return;
@@ -131,6 +166,9 @@ export default function Contour({ height = 132 }: { height?: number }) {
     let best: (typeof placed)[number] | null = null;
     let bestD = Infinity;
     for (const p of placed) {
+      // A soloed part owns the strip too, or a click near two crossing lines
+      // would sound the one that is faded out.
+      if (solo && p.part !== solo) continue;
       const y = rect.height - ((p.midi - lo) / span) * rect.height;
       const d = Math.hypot(p.x - px, y - py);
       if (d < bestD) {
@@ -163,18 +201,24 @@ export default function Contour({ height = 132 }: { height?: number }) {
 function layout(score: PageScore, width: number, page: number) {
   const staffOf = new Map(score.staves.map((s) => [s.id, s]));
   const rowOf = new Map(score.staves.map((s) => [s.id, s.positionInSystem]));
+  const parts = scoreParts(score);
+  const partRowOf = new Map(parts.map((p, i) => [p.id, i]));
 
   const items = score.notes
     .filter((n) => n.page === page)
     .map((n) => {
       const staff = staffOf.get(n.staff);
       if (!staff) return null;
+      const part = score.partOf?.[n.id] ?? null;
       return {
         id: n.id,
         midi: noteMidi(n, staff, score),
         system: staff.system,
         x: n.x,
         staffRow: rowOf.get(n.staff) ?? 0,
+        part,
+        /** Which part, as a position in the list — which is its colour. */
+        partRow: part != null ? (partRowOf.get(part) ?? -1) : -1,
       };
     })
     .filter((v): v is NonNullable<typeof v> => v != null)

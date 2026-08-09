@@ -180,6 +180,12 @@
   .chip-on {
     @apply bg-ink text-paper border-ink;
   }
+  .chip:disabled {
+    @apply opacity-40 cursor-not-allowed;
+  }
+  .chip:disabled:hover {
+    @apply border-rule2 text-ink2;
+  }
 
   /* Clef pickers live in the page's gutter. The visible part is just the code —
      "G8" — with a transparent <select> over it: a native select would show

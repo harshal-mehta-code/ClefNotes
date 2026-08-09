@@ -316,6 +316,58 @@ else {
   );
 }
 
+// Parts are tagged by tapping notes, which is a hundred taps on a phone and
+// only works if the phone's own gestures still win. A swipe over the music must
+// still scroll and still tag nothing — the same rule that keeps a scroll silent,
+// and a worse failure here, because a stray tag is saved.
+if (!spot2) check('a tap while tagging puts the note in the part', false, 'no note on screen');
+else {
+  await page.evaluate(() => {
+    const s = window.__cn.getState();
+    s.setCurrentPart(s.score.parts[0].id);
+    s.setTagging(true);
+  });
+  await page.waitForTimeout(200);
+
+  await touch('touchStart', spot2.x, spot2.y);
+  await page.waitForTimeout(100);
+  await touch('touchEnd', spot2.x, spot2.y);
+  await page.waitForTimeout(250);
+  const tapped = await page.evaluate(() => {
+    const s = window.__cn.getState();
+    return Object.values(s.score.partOf ?? {}).filter((p) => p === s.currentPart).length;
+  });
+  check('a tap while tagging puts the note in the part', tapped === 1, `${tapped} tagged`);
+
+  const swiped = await (async () => {
+    await touch('touchStart', spot2.x + 40, spot2.y);
+    for (let i = 1; i <= 10; i++) await touch('touchMove', spot2.x + 40, spot2.y - i * 16);
+    await touch('touchEnd', spot2.x + 40, spot2.y - 160);
+    await page.waitForTimeout(250);
+    return await page.evaluate(() => Object.keys(window.__cn.getState().score.partOf ?? {}).length);
+  })();
+  check('a swipe over the music still scrolls, and tags nothing', swiped === tapped, `${swiped}`);
+
+  await touch('touchStart', spot2.x, spot2.y);
+  await page.waitForTimeout(450);
+  for (let i = 1; i <= 14; i++) {
+    await touch('touchMove', spot2.x + i * 12, spot2.y);
+    await page.waitForTimeout(25);
+  }
+  await touch('touchEnd', spot2.x + 168, spot2.y);
+  await page.waitForTimeout(300);
+  const painted = await page.evaluate(() => {
+    const s = window.__cn.getState();
+    return Object.values(s.score.partOf ?? {}).filter((p) => p === s.currentPart).length;
+  });
+  check('holding then sliding paints a phrase into the part', painted > tapped, `${painted} tagged`);
+  await page.evaluate(() => {
+    const s = window.__cn.getState();
+    s.setTagging(false);
+    s.setCurrentPart(null);
+  });
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 2).join(' | '));
 
 if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });

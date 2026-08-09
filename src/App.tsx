@@ -6,6 +6,7 @@ import Library from './components/Library';
 import Sheet from './components/Sheet';
 import Keys from './components/Keys';
 import Contour from './components/Contour';
+import Parts from './components/Parts';
 
 export default function App() {
   const view = useApp((s) => s.view);
@@ -168,6 +169,11 @@ export default function App() {
 
       {view === 'sheet' && score && (
         <div className="shrink-0 border-t-[1.5px] border-ink">
+          {/* Parts sit against the page, above the roll and the keyboard, and on
+              every screen — this is the one control here that is used a hundred
+              times in a sitting, and on a phone it is the only one you can
+              reach without moving your hand. */}
+          <Parts />
           {showRoll && (
             <div className="hidden border-b border-rule sm:block">
               <Contour height={116} />
